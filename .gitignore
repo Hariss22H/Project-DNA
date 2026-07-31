@@ -153,6 +153,9 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# Project DNA uploads
+backend/uploads/
 env/
 venv/
 ENV/

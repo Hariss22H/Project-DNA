@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from typing import Dict, List, Any
-from app.services.repository_service import repository_service
+from app.services.local_repository_service import repository_service
 
 router = APIRouter(prefix="/repository", tags=["Repository"])
 

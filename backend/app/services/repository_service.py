@@ -1,163 +1,127 @@
-import os
-from pathlib import Path
-from typing import Dict, List, Any
-from fastapi import HTTPException
+"""GitHub repository orchestration — API-facing, uses pluggable GitHubService."""
 
-# We resolve the repository root dynamically. 
-# Since this file is in backend/app/services, the project root is 4 levels up.
-# Alternatively, allow overriding via environment variables.
-DEFAULT_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-REPO_ROOT = Path(os.getenv("REPO_ROOT", DEFAULT_REPO_ROOT))
+from __future__ import annotations
 
-# Common directories and files to ignore during traversal
-IGNORE_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv", 
-    "dist", "build", ".idea", ".vscode", "coverage"
-}
-IGNORE_FILES = {".DS_Store", "Thumbs.db"}
+from typing import Any, Optional
 
-# Basic extension to language mapping
-EXTENSION_LANGUAGE_MAP = {
-    ".py": "Python",
-    ".js": "JavaScript",
-    ".jsx": "JavaScript (React)",
-    ".ts": "TypeScript",
-    ".tsx": "TypeScript (React)",
-    ".html": "HTML",
-    ".css": "CSS",
-    ".json": "JSON",
-    ".md": "Markdown",
-    ".yml": "YAML",
-    ".yaml": "YAML",
-    ".txt": "Text",
-    ".sh": "Shell Script",
-    ".env": "Environment Variables",
-    ".gitignore": "Git Ignore",
-    ".lock": "Lockfile"
-}
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from app.core.exceptions import AppError
+from app.models.serializers import serialize_repository
+from app.schemas.project import ProjectStatus
+from app.services.container import services
+from app.services.github import GitHubService
+from app.services.project_service import ProjectService
+from app.services.timeline.base import TimelineEvent
+from app.utils.ids import to_object_id
+from app.utils.time import utc_now
+
+REPOSITORIES_COLLECTION = "repositories"
+
 
 class RepositoryService:
-    """Service to read and analyze local repository structure and files."""
-    
-    def _is_ignored(self, path: Path) -> bool:
-        """Check if a path should be ignored based on its parts or name."""
-        if path.name in IGNORE_DIRS or path.name in IGNORE_FILES:
-            return True
-        # Check all parent directories in the path
-        for part in path.parts:
-            if part in IGNORE_DIRS:
-                return True
-        return False
+    def __init__(
+        self,
+        db: AsyncIOMotorDatabase,
+        *,
+        github_service: Optional[GitHubService] = None,
+    ) -> None:
+        self.db = db
+        self.collection = db[REPOSITORIES_COLLECTION]
+        self.projects = ProjectService(db)
+        self.github = github_service or services.github
 
-    def get_structure(self) -> Dict[str, Any]:
-        """Recursively build the folder and file hierarchy of the repository."""
-        if not REPO_ROOT.exists():
-            raise HTTPException(status_code=404, detail="Repository root not found.")
-        
-        def build_tree(current_path: Path) -> Dict[str, Any]:
-            if self._is_ignored(current_path):
-                return {} # Return empty dict, which we will filter out
-                
-            tree: Dict[str, Any] = {
-                "name": current_path.name,
-                "type": "directory" if current_path.is_dir() else "file",
-                "path": str(current_path.relative_to(REPO_ROOT).as_posix()),
-            }
-            
-            if current_path.is_dir():
-                tree["children"] = []
-                try:
-                    # Sort directories first, then files, both alphabetically
-                    for child in sorted(current_path.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-                        child_tree = build_tree(child)
-                        if child_tree:  # If not ignored
-                            tree["children"].append(child_tree)
-                except PermissionError:
-                    pass # Skip directories we don't have permission to read
-            else:
-                # Add file specific metadata
-                tree["size_bytes"] = current_path.stat().st_size
-                tree["extension"] = current_path.suffix.lower()
-                
-            return tree
-            
-        tree = build_tree(REPO_ROOT)
-        # Manually fix the root node's path string and name if it's the project root
-        tree["name"] = REPO_ROOT.name
-        tree["path"] = "/"
-        return tree
+    async def connect_repository(
+        self,
+        *,
+        user_id: str,
+        project_id: str,
+        repository_url: str,
+    ) -> dict[str, Any]:
+        await self.projects.get_project(user_id=user_id, project_id=project_id)
 
-    def get_files(self) -> List[Dict[str, Any]]:
-        """Get a flat list of all files in the repository."""
-        if not REPO_ROOT.exists():
-            raise HTTPException(status_code=404, detail="Repository root not found.")
-            
-        files_list = []
-        try:
-            for path in REPO_ROOT.rglob("*"):
-                if path.is_file() and not self._is_ignored(path):
-                    files_list.append({
-                        "name": path.name,
-                        "path": str(path.relative_to(REPO_ROOT).as_posix()),
-                        "size_bytes": path.stat().st_size,
-                        "extension": path.suffix.lower()
-                    })
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error scanning files: {str(e)}")
-            
-        return files_list
+        if not await self.github.validate_repository(repository_url):
+            raise AppError(
+                "Invalid or unreachable public GitHub repository URL",
+                status_code=400,
+                code="invalid_github_url",
+            )
 
-    def get_folders(self) -> List[Dict[str, Any]]:
-        """Get a flat list of all folders in the repository."""
-        if not REPO_ROOT.exists():
-            raise HTTPException(status_code=404, detail="Repository root not found.")
-            
-        folders_list = []
-        try:
-            for path in REPO_ROOT.rglob("*"):
-                if path.is_dir() and not self._is_ignored(path):
-                    folders_list.append({
-                        "name": path.name,
-                        "path": str(path.relative_to(REPO_ROOT).as_posix()),
-                    })
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error scanning folders: {str(e)}")
-            
-        return folders_list
-
-    def get_statistics(self) -> Dict[str, Any]:
-        """Calculate and return repository statistics."""
-        files = self.get_files()
-        folders = self.get_folders()
-        
-        total_size = 0
-        extensions_count: Dict[str, int] = {}
-        languages_count: Dict[str, int] = {}
-        
-        # Sort files by size in descending order to get the largest files
-        sorted_files = sorted(files, key=lambda f: f["size_bytes"], reverse=True)
-        largest_files = sorted_files[:10]
-        
-        for f in files:
-            size = f["size_bytes"]
-            ext = f["extension"] or "No Extension"
-            
-            total_size += size
-            
-            # Count extensions
-            extensions_count[ext] = extensions_count.get(ext, 0) + 1
-            
-            # Map to programming language and count
-            lang = EXTENSION_LANGUAGE_MAP.get(ext, "Other")
-            languages_count[lang] = languages_count.get(lang, 0) + 1
-            
-        return {
-            "total_folders": len(folders),
-            "total_files": len(files),
-            "total_size_bytes": total_size,
-            "extensions": extensions_count,
-            "languages": languages_count,
-            "largest_files": largest_files
+        fetched = await self.github.fetch_repository(repository_url)
+        now = utc_now()
+        payload = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "repository_url": fetched.repository_url,
+            "owner": fetched.owner,
+            "name": fetched.name,
+            "full_name": fetched.full_name,
+            "description": fetched.description,
+            "default_branch": fetched.default_branch,
+            "readme_content": fetched.readme_content,
+            "structure": fetched.structure,
+            "important_files": fetched.important_files,
+            "languages": fetched.languages,
+            "topics": fetched.topics,
+            "commit_summary": [item.model_dump() for item in fetched.commit_summary],
+            "stars": fetched.stars,
+            "forks": fetched.forks,
+            "raw": fetched.raw,
+            "last_synced": now,
+            "updated_at": now,
         }
 
-repository_service = RepositoryService()
+        existing = await self.collection.find_one({"project_id": project_id})
+        if existing:
+            await self.collection.update_one({"_id": existing["_id"]}, {"$set": payload})
+            payload["_id"] = existing["_id"]
+            payload["created_at"] = existing["created_at"]
+        else:
+            payload["created_at"] = now
+            result = await self.collection.insert_one(payload)
+            payload["_id"] = result.inserted_id
+
+        await self.projects.update_project(
+            user_id=user_id,
+            project_id=project_id,
+            updates={
+                "github_repository": fetched.repository_url,
+                "project_status": ProjectStatus.CREATED,
+            },
+        )
+
+        await services.timeline.add_event(
+            TimelineEvent(
+                project_id=project_id,
+                event_type="repository_connected",
+                title="Repository Connected",
+                description=f"Connected {fetched.full_name}",
+                metadata={"repository_url": fetched.repository_url},
+            )
+        )
+        if fetched.readme_content:
+            await services.timeline.add_event(
+                TimelineEvent(
+                    project_id=project_id,
+                    event_type="readme_indexed",
+                    title="README Indexed",
+                    description=f"README extracted from {fetched.full_name}",
+                    metadata={"chars": len(fetched.readme_content)},
+                )
+            )
+
+        return serialize_repository(payload)
+
+    async def get_repository(self, *, user_id: str, project_id: str) -> dict[str, Any]:
+        await self.projects.get_project(user_id=user_id, project_id=project_id)
+        doc = await self.collection.find_one({"project_id": project_id})
+        if doc is None:
+            raise AppError(
+                "No GitHub repository connected to this project",
+                status_code=404,
+                code="repository_not_found",
+            )
+        return serialize_repository(doc)
+
+    async def delete_for_project(self, project_id: str) -> None:
+        await self.collection.delete_many({"project_id": project_id})
