@@ -86,8 +86,8 @@ Member 3 utility connectors are mounted alongside the core APIs:
 | GitHub connector | `/api/github/*` |
 | Local repository scanner | `/api/repository/*` |
 | Upload / PDF / DOCX / metadata | `/api/documents/upload`, `/api/documents/pdf/parse`, ... |
-| Timeline generate | `/api/integrations/timeline/generate` |
-| Graph generate | `/api/integrations/graph/generate` |
+| Timeline generate | `/api/timeline/generate` |
+| Graph generate / enrich | `/api/graph/generate`, `/api/graph/enrich` |
 
 Core product routes (auth, projects, RAG chat, dashboard, project graph/timeline) remain owned by Member 1.
 

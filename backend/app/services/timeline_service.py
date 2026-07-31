@@ -44,5 +44,34 @@ class TimelineService:
         events.sort(key=lambda x: x["date"])
         return events
 
+    async def generate_with_github(self) -> List[Dict[str, Any]]:
+        """Extend local timeline events with live GitHub commit history."""
+        events = self.generate()
+        try:
+            from app.services.github_service import github_service
+
+            commits = await github_service.get_commits()
+        except Exception:
+            return events
+
+        for commit in commits or []:
+            payload = commit.get("commit") or {}
+            committer = payload.get("committer") or {}
+            date = committer.get("date") or (payload.get("author") or {}).get("date")
+            if not date:
+                continue
+            message = (payload.get("message") or "Commit").split("\n")[0][:80]
+            events.append(
+                {
+                    "date": date,
+                    "event": message,
+                    "source": "GitHub Commit",
+                    "author": committer.get("name") or (payload.get("author") or {}).get("name"),
+                }
+            )
+
+        events.sort(key=lambda x: x["date"])
+        return events
+
 
 timeline_service = TimelineService()
