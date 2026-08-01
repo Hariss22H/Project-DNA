@@ -48,13 +48,19 @@ class DashboardService:
             .limit(5)
         ]
 
+        from app.services.knowledge.documentation import combine_knowledge_text, has_topic
+
         has_readme = bool(repo and (repo.get("readme_content") or "").strip())
+        knowledge_text = combine_knowledge_text(repo=repo, docs=docs)
         architecture_count = sum(
             1
             for doc in docs
             if doc.get("is_architecture") or "architecture" in (doc.get("file_name") or "").lower()
         )
-        docs_count = len(docs)
+        # Content-aware: README/spec that explain architecture count as architecture knowledge.
+        if architecture_count == 0 and has_topic(knowledge_text, "architecture"):
+            architecture_count = 1
+        docs_count = len(docs) + len((repo or {}).get("documentation_files") or [])
         chunks_indexed = int((meta or {}).get("chunks_indexed") or 0)
         if chunks_indexed == 0:
             chunks_indexed = await services.vector_store.count_by_project(project_id)

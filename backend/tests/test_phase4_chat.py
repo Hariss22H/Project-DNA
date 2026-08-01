@@ -151,6 +151,70 @@ async def test_rag_rejects_when_no_relevant_retrieval():
 
 
 @pytest.mark.asyncio
+async def test_rag_overrides_soft_refusal_when_chunks_exist():
+    from app.services.llm.base import LLMResult
+    from app.services.llm.fallback import LLMFallbackManager
+    from app.services.llm.fake import FakeLLMProvider
+    from app.services.prompts.rag import INSUFFICIENT_CONTEXT_ANSWER
+    from app.services.vectorstore import VectorPoint
+
+    class RefusingThenHelpful(FakeLLMProvider):
+        def __init__(self) -> None:
+            super().__init__(model_name="fake-openai")
+            self.calls = 0
+
+        async def generate(self, *, system_prompt: str, user_prompt: str) -> LLMResult:
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResult(
+                    content=INSUFFICIENT_CONTEXT_ANSWER,
+                    model_used=self._model_name,
+                    provider=self.name,
+                )
+            return LLMResult(
+                content="JWT authentication protects secured API endpoints.",
+                model_used=self._model_name,
+                provider=self.name,
+            )
+
+    store = InMemoryVectorStore()
+    await store.ensure_collection(vector_size=32)
+    await store.upsert(
+        [
+            VectorPoint(
+                id="p1:readme:0",
+                vector=[0.2] * 32,
+                payload={
+                    "project_id": "proj-soft",
+                    "text": (
+                        "Project DNA uses JWT authentication to protect secured API endpoints. "
+                        "Users receive a token after login and send it in the Authorization header."
+                    ),
+                    "file_name": "README.md",
+                    "title": "README",
+                    "source_type": "readme",
+                    "chunk_index": 0,
+                },
+            )
+        ]
+    )
+    services.set_vector_store(store)
+    services.set_llm_manager(
+        LLMFallbackManager(
+            primary=RefusingThenHelpful(),
+            fallback=FakeLLMProvider(model_name="fake-gemini"),
+            primary_retries=1,
+        )
+    )
+    rag = RAGService(min_score=-1.0, top_k=3)
+    result = await rag.ask(project_id="proj-soft", question="How does JWT authentication work?")
+    assert "JWT" in result["answer"]
+    assert result["retrieved_count"] > 0
+    assert result["sources"]
+    assert INSUFFICIENT_CONTEXT_ANSWER not in result["answer"]
+
+
+@pytest.mark.asyncio
 async def test_openapi_includes_phase4_paths(app_client: AsyncClient):
     paths = (await app_client.get("/openapi.json")).json()["paths"]
     assert "/api/chat" in paths

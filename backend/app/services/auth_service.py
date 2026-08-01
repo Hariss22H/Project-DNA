@@ -73,3 +73,27 @@ class AuthService:
         if doc is None:
             return None
         return serialize_user(doc)
+
+    async def email_exists(self, email: str) -> bool:
+        normalized_email = email.strip().lower()
+        doc = await self.collection.find_one({"email": normalized_email}, {"_id": 1})
+        return doc is not None
+
+    async def reset_password(self, *, email: str, new_password: str) -> None:
+        normalized_email = email.strip().lower()
+        doc = await self.collection.find_one({"email": normalized_email})
+        if doc is None:
+            raise AppError(
+                "No account found with this email.",
+                status_code=404,
+                code="user_not_found",
+            )
+        await self.collection.update_one(
+            {"_id": doc["_id"]},
+            {
+                "$set": {
+                    "password_hash": hash_password(new_password),
+                    "updated_at": utc_now(),
+                }
+            },
+        )

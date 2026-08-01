@@ -31,6 +31,10 @@ class GitHubRepositoryData(BaseModel):
     readme_content: Optional[str] = None
     structure: list[str] = Field(default_factory=list)
     important_files: list[str] = Field(default_factory=list)
+    documentation_files: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Selected documentation paths with extracted text content.",
+    )
     languages: dict[str, int] = Field(default_factory=dict)
     topics: list[str] = Field(default_factory=list)
     commit_summary: list[GitHubCommitSummary] = Field(default_factory=list)

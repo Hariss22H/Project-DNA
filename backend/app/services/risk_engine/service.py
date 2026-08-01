@@ -1,4 +1,4 @@
-"""Rule-based risk detection with optional LLM summarization."""
+"""Context-aware risk detection with optional LLM summarization."""
 
 from __future__ import annotations
 
@@ -8,6 +8,11 @@ from typing import Any, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.services.container import services
+from app.services.knowledge.documentation import (
+    combine_knowledge_text,
+    has_topic,
+    source_inventory,
+)
 from app.services.llm.fallback import LLMFallbackManager
 from app.services.project_service import ProjectService
 from app.services.timeline.base import TimelineEvent
@@ -90,13 +95,10 @@ class RiskEngine:
         chunks_indexed: int,
     ) -> list[dict[str, Any]]:
         risks: list[dict[str, Any]] = []
-        has_readme = bool(repo and (repo.get("readme_content") or "").strip())
-        architecture_docs = [
-            doc for doc in docs if doc.get("is_architecture") or "architecture" in (doc.get("file_name") or "").lower()
-        ]
-        docs_count = len(docs)
+        inventory = source_inventory(repo=repo, docs=docs)
+        knowledge = combine_knowledge_text(repo=repo, docs=docs)
 
-        if repo is None and docs_count == 0:
+        if repo is None and inventory["uploaded_doc_count"] == 0:
             risks.append(
                 _risk(
                     rule_id="no_sources",
@@ -106,48 +108,101 @@ class RiskEngine:
                     recommendation="Connect a public GitHub repository or upload project documentation.",
                 )
             )
+            return risks
 
-        if repo is not None and not has_readme:
+        if repo is not None and not inventory["has_readme"]:
             risks.append(
                 _risk(
                     rule_id="missing_readme",
-                    title="Missing README",
-                    description="The connected repository does not include usable README content.",
+                    title="Missing project overview",
+                    description=(
+                        "The connected repository does not include usable README content, "
+                        "so newcomers lack a project overview."
+                    ),
                     severity="high",
-                    recommendation="Add a README.md that explains setup, architecture, and key modules.",
+                    recommendation="Add a README.md that explains purpose, setup, and key modules.",
+                )
+            )
+        elif inventory["has_readme"] and inventory["readme_chars"] < 180 and not has_topic(knowledge, "overview"):
+            risks.append(
+                _risk(
+                    rule_id="missing_overview",
+                    title="Missing project overview",
+                    description=(
+                        "Available documentation does not clearly explain what the project is "
+                        "or how the system fits together."
+                    ),
+                    severity="medium",
+                    recommendation="Expand README/overview docs with goals, users, and major components.",
                 )
             )
 
-        if not architecture_docs:
+        # Architecture risk is content-aware: README/docs that explain architecture are enough.
+        if not has_topic(knowledge, "architecture"):
             risks.append(
                 _risk(
-                    rule_id="missing_architecture",
-                    title="Missing Architecture Document",
-                    description="No architecture document was found among uploaded project files.",
+                    rule_id="missing_architecture_knowledge",
+                    title="Missing architecture knowledge",
+                    description=(
+                        "Indexed sources do not describe system architecture, components, or tech stack "
+                        "clearly enough for reliable onboarding."
+                    ),
                     severity="medium",
-                    recommendation="Upload an architecture overview (PDF/DOCX/MD) describing system components.",
+                    recommendation=(
+                        "Document architecture in README, architecture notes, or design docs — "
+                        "filename alone is not required if the knowledge exists."
+                    ),
                 )
             )
 
-        if docs_count < 2:
+        if not has_topic(knowledge, "testing"):
             risks.append(
                 _risk(
-                    rule_id="few_documents",
-                    title="Very few uploaded documents",
-                    description=f"Only {docs_count} document(s) are available for knowledge extraction.",
+                    rule_id="no_testing_documentation",
+                    title="No testing documentation",
+                    description="No clear testing guidance was found across README, docs, or uploads.",
                     severity="medium",
-                    recommendation="Upload SRS, API docs, design notes, or technical specs to improve coverage.",
+                    recommendation="Document how to run tests, what suites exist, and quality expectations.",
                 )
             )
 
-        if docs_count + (1 if has_readme else 0) < 3:
+        if not has_topic(knowledge, "deployment"):
             risks.append(
                 _risk(
-                    rule_id="weak_documentation_coverage",
-                    title="Weak documentation coverage",
-                    description="Project knowledge sources appear sparse relative to a healthy documentation baseline.",
+                    rule_id="no_deployment_instructions",
+                    title="No deployment instructions",
+                    description="Deployment/runbook guidance appears missing from indexed project knowledge.",
                     severity="medium",
-                    recommendation="Increase documentation breadth across features, APIs, and operational workflows.",
+                    recommendation="Add deployment steps, environments, and operational prerequisites.",
+                )
+            )
+
+        if inventory["source_count"] < 2 or inventory["total_chars"] < 600:
+            risks.append(
+                _risk(
+                    rule_id="poor_documentation_coverage",
+                    title="Poor documentation coverage",
+                    description=(
+                        f"Only {inventory['source_count']} substantive source(s) "
+                        f"(~{inventory['total_chars']} chars) are available for knowledge extraction."
+                    ),
+                    severity="medium",
+                    recommendation=(
+                        "Increase coverage with README, task/spec docs, API notes, and uploaded PDFs/Markdown."
+                    ),
+                )
+            )
+        elif inventory["structure_count"] >= 40 and inventory["total_chars"] < 2500:
+            risks.append(
+                _risk(
+                    rule_id="sparse_repository_documentation",
+                    title="Sparse repository documentation",
+                    description=(
+                        f"Repository structure lists {inventory['structure_count']} paths, "
+                        "but indexed documentation remains thin relative to codebase size."
+                    ),
+                    severity="medium",
+                    recommendation="Document critical modules, APIs, and operational workflows first.",
                 )
             )
 
@@ -162,17 +217,22 @@ class RiskEngine:
                 )
             )
 
-        structure = (repo or {}).get("structure") or []
-        if len(structure) >= 40 and docs_count <= 1:
+        authors = {
+            (item.get("author") or "").strip()
+            for item in ((repo or {}).get("commit_summary") or [])
+            if (item.get("author") or "").strip()
+        }
+        if inventory["structure_count"] >= 25 and 0 < len(authors) <= 1:
             risks.append(
                 _risk(
-                    rule_id="large_undocumented_codebase",
-                    title="Large undocumented feature surface",
+                    rule_id="single_contributor_concentration",
+                    title="Only one contributor owns critical modules",
                     description=(
-                        f"Repository structure lists {len(structure)} paths but documentation uploads are minimal."
+                        "Recent commit history is concentrated in a single contributor, "
+                        "increasing bus-factor risk for critical modules."
                     ),
-                    severity="medium",
-                    recommendation="Document critical modules and high-traffic APIs first.",
+                    severity="low",
+                    recommendation="Share ownership via pairing, reviews, and module documentation.",
                 )
             )
 
@@ -185,13 +245,18 @@ class RiskEngine:
             "pom.xml",
             "cargo.toml",
         }
-        if len(important.intersection(dependency_markers)) >= 2 and docs_count == 0:
+        if (
+            len(important.intersection(dependency_markers)) >= 2
+            and inventory["total_chars"] < 800
+            and not has_topic(knowledge, "api")
+        ):
             risks.append(
                 _risk(
                     rule_id="high_dependency_modules",
                     title="High dependency modules with weak docs",
                     description=(
-                        "Multiple dependency manifests were detected, but no supporting documents were uploaded."
+                        "Multiple dependency manifests were detected, but supporting integration "
+                        "documentation looks weak."
                     ),
                     severity="low",
                     recommendation="Document external service dependencies and integration boundaries.",

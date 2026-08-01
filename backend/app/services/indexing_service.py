@@ -205,12 +205,32 @@ class IndexingService:
                     }
                 )
 
+            documentation_files = await self._ensure_documentation_files(repo)
+            for index, item in enumerate(documentation_files):
+                text = (item.get("content") or "").strip()
+                path = (item.get("path") or f"repo-doc-{index}").strip()
+                if not text:
+                    continue
+                sources.append(
+                    {
+                        "source_type": "repo_document",
+                        "source_id": f"{repo['_id']}:{path}",
+                        "file_name": path.split("/")[-1],
+                        "title": path,
+                        "text": text,
+                    }
+                )
+
             meta_bits = [
                 f"Repository: {repo.get('full_name')}",
                 f"Description: {repo.get('description') or 'N/A'}",
                 f"Default branch: {repo.get('default_branch')}",
                 f"Languages: {', '.join((repo.get('languages') or {}).keys()) or 'N/A'}",
                 f"Important files: {', '.join(repo.get('important_files') or []) or 'N/A'}",
+                (
+                    "Documentation files: "
+                    + (", ".join(item.get("path") or "" for item in documentation_files) or "N/A")
+                ),
                 f"Structure sample: {', '.join((repo.get('structure') or [])[:40])}",
             ]
             sources.append(
@@ -238,7 +258,54 @@ class IndexingService:
                 }
             )
 
+        logger.info(
+            "Indexing sources project_id=%s count=%s files=%s",
+            project_id,
+            len(sources),
+            [source.get("file_name") for source in sources],
+        )
         return sources
+
+    async def _ensure_documentation_files(self, repo: dict[str, Any]) -> list[dict[str, Any]]:
+        existing = [
+            item
+            for item in (repo.get("documentation_files") or [])
+            if isinstance(item, dict) and (item.get("content") or "").strip()
+        ]
+        if existing:
+            return existing
+
+        repository_url = repo.get("repository_url")
+        if not repository_url:
+            return []
+
+        github = services.github
+        fetch = getattr(github, "fetch_documentation_files", None)
+        if fetch is None:
+            return []
+
+        try:
+            fetched = await fetch(repository_url, repo.get("structure") or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not fetch repository documentation files: %s", exc)
+            return []
+
+        cleaned = [
+            {"path": item.get("path"), "content": item.get("content")}
+            for item in (fetched or [])
+            if isinstance(item, dict) and (item.get("content") or "").strip()
+        ]
+        if cleaned:
+            await self.repositories.update_one(
+                {"_id": repo["_id"]},
+                {"$set": {"documentation_files": cleaned, "updated_at": utc_now()}},
+            )
+            logger.info(
+                "Fetched %s repository documentation files for %s",
+                len(cleaned),
+                repository_url,
+            )
+        return cleaned
 
     async def _embed_batched(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
