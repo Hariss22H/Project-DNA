@@ -61,6 +61,7 @@ class RepositoryService:
             "readme_content": fetched.readme_content,
             "structure": fetched.structure,
             "important_files": fetched.important_files,
+            "documentation_files": fetched.documentation_files,
             "languages": fetched.languages,
             "topics": fetched.topics,
             "commit_summary": [item.model_dump() for item in fetched.commit_summary],

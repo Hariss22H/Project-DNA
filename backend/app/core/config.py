@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     chunk_size_tokens: int = 800
     chunk_overlap_tokens: int = 120
-    rag_top_k: int = 5
-    rag_min_score: float = 0.15
+    rag_top_k: int = 8
+    rag_min_score: float = 0.05
 
     github_token: str = ""
 

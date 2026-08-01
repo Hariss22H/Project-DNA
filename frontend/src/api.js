@@ -6,6 +6,27 @@ function authHeaders(token, extra = {}) {
   return headers
 }
 
+function extractErrorMessage(body, status) {
+  const detail = body?.detail
+  const raw = Array.isArray(detail)
+    ? detail.map((item) => item.msg || JSON.stringify(item)).join(', ')
+    : detail
+      || body?.error?.message
+      || body?.message
+      || ''
+
+  if (status === 401 || /invalid.*(email|password|credentials)/i.test(raw)) {
+    return 'Invalid email or password.'
+  }
+  if (status === 404 && /account|email|user/i.test(raw)) {
+    return raw || 'No account found with this email.'
+  }
+  if (raw && !/^Request failed/i.test(raw)) return raw
+  if (status === 422) return 'Please check your details and try again.'
+  if (status >= 500) return 'Something went wrong on our side. Please try again.'
+  return 'Something went wrong. Please try again.'
+}
+
 async function parseResponse(response) {
   const text = await response.text()
   let body = null
@@ -15,11 +36,7 @@ async function parseResponse(response) {
     body = { detail: text }
   }
   if (!response.ok) {
-    const detail = body?.detail
-    const message = Array.isArray(detail)
-      ? detail.map((item) => item.msg || JSON.stringify(item)).join(', ')
-      : detail || body?.message || `Request failed (${response.status})`
-    throw new Error(message)
+    throw new Error(extractErrorMessage(body, response.status))
   }
   return body
 }
@@ -37,6 +54,10 @@ export async function apiRequest(path, { method = 'GET', token, body, formData }
 export const api = {
   register: (payload) => apiRequest('/api/auth/register', { method: 'POST', body: payload }),
   login: (payload) => apiRequest('/api/auth/login', { method: 'POST', body: payload }),
+  forgotPassword: (email) =>
+    apiRequest('/api/auth/forgot-password', { method: 'POST', body: { email } }),
+  resetPassword: (payload) =>
+    apiRequest('/api/auth/reset-password', { method: 'POST', body: payload }),
   me: (token) => apiRequest('/api/auth/me', { token }),
   listProjects: (token) => apiRequest('/api/projects', { token }),
   createProject: (token, payload) => apiRequest('/api/projects', { method: 'POST', token, body: payload }),

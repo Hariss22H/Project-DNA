@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import {
   Activity, AlertTriangle, Bell, Bot, ChevronDown, CircleHelp, FileText,
   FolderKanban, GitBranch, LayoutDashboard, Menu, MoreHorizontal, Plus,
@@ -13,6 +14,13 @@ const navigation = [
 
 const SESSION_KEY = 'project-dna-session'
 const PROJECT_KEY = 'project-dna-active-project'
+const CHAT_EXAMPLES = [
+  'Explain the authentication flow.',
+  'Summarize the project architecture.',
+  'Which APIs handle user authentication?',
+  'What technologies are used?',
+  'What risks exist in this project?',
+]
 
 function initialsFrom(name = '') {
   const parts = name.trim().split(/\s+/).filter(Boolean)
@@ -33,6 +41,59 @@ function sessionFromAuth(data) {
   }
 }
 
+function formatRelativeTime(ts) {
+  const diff = Math.max(0, Date.now() - ts)
+  if (diff < 60_000) return 'Just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return new Date(ts).toLocaleDateString()
+}
+
+function enhanceAnswerMarkdown(text = '') {
+  const trimmed = text.trim()
+  if (!trimmed) return '_No answer returned._'
+  if (/^#{1,3}\s|^\s*[-*•]\s|^\s*\d+\.\s/m.test(trimmed)) return trimmed
+
+  const paragraphs = trimmed
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  if (paragraphs.length > 1) {
+    return paragraphs.map((p) => p.replace(/\n/g, ' ')).join('\n\n')
+  }
+
+  const sentences = trimmed
+    .replace(/\n+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  if (sentences.length <= 2) return trimmed
+
+  const intro = sentences.slice(0, 2).join(' ')
+  const points = sentences.slice(2, 6)
+  return `${intro}\n\n### Key Points\n\n${points.map((point) => `- ${point}`).join('\n')}`
+}
+
+function MarkdownBody({ content }) {
+  return (
+    <ReactMarkdown
+      components={{
+        a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+        pre: ({ children }) => <pre className="code-block">{children}</pre>,
+        code: ({ className, children }) => (
+          className
+            ? <code className={className}>{children}</code>
+            : <code className="inline-code">{children}</code>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
 function App() {
   const [auth, setAuth] = useState(() => {
     const saved = localStorage.getItem(SESSION_KEY)
@@ -43,16 +104,23 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [messages, setMessages] = useState([])
+  const [chatLoading, setChatLoading] = useState(false)
   const [notice, setNotice] = useState('')
   const [projects, setProjects] = useState([])
   const [projectId, setProjectId] = useState(() => localStorage.getItem(PROJECT_KEY) || '')
   const [dashboard, setDashboard] = useState(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [notifications, setNotifications] = useState([
+    { id: 'welcome', text: 'Welcome to Project DNA.', createdAt: Date.now(), read: false },
+  ])
+  const notifRef = useRef(null)
 
   const restrictedForMember = ['Risk Dashboard']
   const visibleNavigation = navigation.filter(([label]) => auth?.role !== 'Team member' || !restrictedForMember.includes(label))
   const activeProject = projects.find((p) => p.id === projectId) || projects[0] || null
+  const unreadCount = notifications.filter((n) => !n.read).length
 
   const pageSubtitle = useMemo(() => {
     if (!activeProject) return 'Create a project to connect GitHub, documents, and AI chat.'
@@ -63,6 +131,13 @@ function App() {
   const showNotice = (message) => {
     setNotice(message)
     window.setTimeout(() => setNotice(''), 3200)
+  }
+
+  const pushNotification = (text) => {
+    setNotifications((current) => [
+      { id: `${Date.now()}-${Math.random()}`, text, createdAt: Date.now(), read: false },
+      ...current,
+    ].slice(0, 12))
   }
 
   const persistSession = (session) => {
@@ -76,6 +151,7 @@ function App() {
     setProjects([])
     setDashboard(null)
     setMessages([])
+    setNotifOpen(false)
   }
 
   const selectProject = (id) => {
@@ -100,7 +176,7 @@ function App() {
       }
     } catch (error) {
       showNotice(error.message)
-      if (/credentials|unauthorized|401/i.test(error.message)) logout()
+      if (/credentials|unauthorized|401|signed in|sign in/i.test(error.message)) logout()
     } finally {
       setLoading(false)
     }
@@ -118,11 +194,24 @@ function App() {
       .catch((error) => showNotice(error.message))
   }, [auth?.token, projectId])
 
-  const runAction = async (label, fn) => {
+  useEffect(() => {
+    if (!notifOpen) return undefined
+    const onPointerDown = (event) => {
+      if (notifRef.current && !notifRef.current.contains(event.target)) {
+        setNotifOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [notifOpen])
+
+  const runAction = async (label, fn, successNotice) => {
     setBusy(label)
     try {
       await fn()
-      showNotice(`${label} complete.`)
+      const message = successNotice || `${label} complete.`
+      showNotice(message)
+      pushNotification(message)
     } catch (error) {
       showNotice(error.message)
     } finally {
@@ -131,28 +220,43 @@ function App() {
   }
 
   const sendMessage = async (text = query) => {
-    if (!text.trim()) return
+    if (!text.trim() || chatLoading) return
     if (!auth?.token || !activeProject) {
       showNotice('Select or create a project before chatting.')
       return
     }
     const question = text.trim()
-    setMessages((current) => [...current, { role: 'user', text: question }])
+    const now = Date.now()
+    setMessages((current) => [...current, { id: `u-${now}`, role: 'user', text: question, createdAt: now }])
     setQuery('')
+    setChatLoading(true)
     try {
       const res = await api.chat(auth.token, activeProject.id, question)
       const answer = res.data?.answer || 'No answer returned.'
       const sources = (res.data?.sources || [])
-        .slice(0, 3)
+        .slice(0, 5)
         .map((s) => s.file_name || s.title || s.id)
         .filter(Boolean)
-      const suffix = sources.length ? `\n\nSources: ${sources.join(', ')}` : ''
       setMessages((current) => [...current, {
+        id: `a-${Date.now()}`,
         role: 'ai',
-        text: `${answer}${suffix}\n\nConfidence ${Math.round(res.data?.confidence || 0)}% · ${res.data?.model_used || 'model'}`,
+        text: answer,
+        sources,
+        confidence: Math.round(res.data?.confidence || 0),
+        model: res.data?.model_used || 'model',
+        createdAt: Date.now(),
       }])
+      pushNotification('AI analysis completed.')
     } catch (error) {
-      setMessages((current) => [...current, { role: 'ai', text: `Chat failed: ${error.message}` }])
+      setMessages((current) => [...current, {
+        id: `e-${Date.now()}`,
+        role: 'ai',
+        text: `I couldn't complete that request.\n\n${error.message}`,
+        error: true,
+        createdAt: Date.now(),
+      }])
+    } finally {
+      setChatLoading(false)
     }
   }
 
@@ -217,7 +321,40 @@ function App() {
                 ))}
               </select>
             )}
-            <button className="icon-button notification" aria-label="Notifications"><Bell size={20} /><i /></button>
+            <div className="notif-wrap" ref={notifRef}>
+              <button
+                className="icon-button notification"
+                aria-label="Notifications"
+                aria-expanded={notifOpen}
+                onClick={() => {
+                  setNotifOpen((open) => !open)
+                  setNotifications((current) => current.map((item) => ({ ...item, read: true })))
+                }}
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && <i />}
+              </button>
+              {notifOpen && (
+                <div className="notif-dropdown" role="menu">
+                  <div className="notif-header">
+                    <strong>Notifications</strong>
+                    <span>{notifications.length ? `${notifications.length} recent` : 'Inbox'}</span>
+                  </div>
+                  {notifications.length ? (
+                    <ul className="notif-list">
+                      {notifications.map((item) => (
+                        <li key={item.id}>
+                          <p>{item.text}</p>
+                          <small>{formatRelativeTime(item.createdAt)}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="notif-empty">No new notifications.</p>
+                  )}
+                </div>
+              )}
+            </div>
             {auth.role !== 'Team member' && (
               <button
                 className="create-button"
@@ -267,6 +404,7 @@ function App() {
               setQuery={setQuery}
               onSend={sendMessage}
               project={activeProject}
+              loading={chatLoading}
             />
           )}
           {active === 'Documents' && (
@@ -283,28 +421,15 @@ function App() {
       {sidebarOpen && <button className="scrim" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}
       <button className="ai-launcher" onClick={() => setChatOpen(true)} aria-label="Open AI assistant"><Bot size={24} /></button>
       {chatOpen && (
-        <div className="chat-panel">
-          <div className="chat-title">
-            <div>
-              <div className="bot-icon"><Bot size={18} /></div>
-              <span><strong>DNA Assistant</strong><small>{activeProject?.project_name || 'Select a project'}</small></span>
-            </div>
-            <button className="icon-button" onClick={() => setChatOpen(false)} aria-label="Close chat"><X /></button>
-          </div>
-          <div className="chat-messages">
-            {messages.length ? messages.map((m, i) => <div key={i} className={`message ${m.role}`}>{m.text}</div>) : (
-              <>
-                <p className="chat-greeting">Ask about this project’s knowledge twin.</p>
-                <button onClick={() => sendMessage('Summarize project risks')}>Summarize project risks</button>
-                <button onClick={() => sendMessage('What decisions were made recently?')}>Recent decisions</button>
-              </>
-            )}
-          </div>
-          <form className="chat-input" onSubmit={(e) => { e.preventDefault(); sendMessage() }}>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Ask about this project..." />
-            <button aria-label="Send message">↑</button>
-          </form>
-        </div>
+        <MiniChatPanel
+          project={activeProject}
+          messages={messages}
+          query={query}
+          setQuery={setQuery}
+          onSend={sendMessage}
+          loading={chatLoading}
+          onClose={() => setChatOpen(false)}
+        />
       )}
       {notice && <div className="toast">{notice}</div>}
     </div>
@@ -312,19 +437,31 @@ function App() {
 }
 
 function Auth({ onLogin, showNotice, notice }) {
-  const [signup, setSignup] = useState(false)
-  if (signup) {
+  const [mode, setMode] = useState('login')
+  if (mode === 'signup') {
     return (
       <>
-        <Signup onLogin={onLogin} onBack={() => setSignup(false)} showNotice={showNotice} />
+        <Signup onLogin={onLogin} onBack={() => setMode('login')} showNotice={showNotice} />
+        {notice && <div className="toast">{notice}</div>}
+      </>
+    )
+  }
+  if (mode === 'forgot') {
+    return (
+      <>
+        <ForgotPassword onBack={() => setMode('login')} showNotice={showNotice} />
         {notice && <div className="toast">{notice}</div>}
       </>
     )
   }
   return (
     <>
-      <Login onLogin={onLogin} showNotice={showNotice} />
-      <button className="auth-switch" onClick={() => setSignup(true)}>New to Project DNA? <strong>Create account</strong></button>
+      <Login
+        onLogin={onLogin}
+        showNotice={showNotice}
+        onCreateAccount={() => setMode('signup')}
+        onForgotPassword={() => setMode('forgot')}
+      />
       {notice && <div className="toast">{notice}</div>}
     </>
   )
@@ -392,26 +529,33 @@ function Signup({ onLogin, onBack, showNotice }) {
   )
 }
 
-function Login({ onLogin, showNotice }) {
+function Login({ onLogin, showNotice, onCreateAccount, onForgotPassword }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [showSignupHint, setShowSignupHint] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const submit = async (event) => {
     event.preventDefault()
     if (!email.includes('@') || password.length < 6) {
       setError('Enter a valid email and a password of at least 6 characters.')
+      setShowSignupHint(false)
       return
     }
     setLoading(true)
     setError('')
+    setShowSignupHint(false)
     try {
       const res = await api.login({ email: email.trim(), password })
       onLogin(sessionFromAuth(res.data))
       showNotice('Signed in.')
     } catch (err) {
-      setError(err.message)
+      const message = err.message || 'Invalid email or password.'
+      setError(message)
+      if (/invalid email or password/i.test(message)) {
+        setShowSignupHint(true)
+      }
     } finally {
       setLoading(false)
     }
@@ -429,11 +573,111 @@ function Login({ onLogin, showNotice }) {
         <form onSubmit={submit} className="login-form">
           <label>Email address<div className="input-wrap"><Mail size={17} /><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" /></div></label>
           <label>Password<div className="input-wrap"><LockKeyhole size={17} /><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" autoComplete="current-password" /></div></label>
-          {error && <p className="form-error">{error}</p>}
-          <div className="login-options"><label className="remember"><input type="checkbox" defaultChecked /> Remember me</label><button type="button">Forgot password?</button></div>
+          {error && (
+            <div className="form-error-block">
+              <p className="form-error">{error}</p>
+              {showSignupHint && <p className="form-error-hint">Don&apos;t have an account? Create one to continue.</p>}
+            </div>
+          )}
+          <div className="login-options">
+            <label className="remember"><input type="checkbox" defaultChecked /> Remember me</label>
+            <button type="button" onClick={onForgotPassword}>Forgot password?</button>
+          </div>
           <button className="login-button" type="submit" disabled={loading}>{loading ? 'Signing in…' : 'Sign in to dashboard →'}</button>
+          <div className="auth-cta">
+            <p>Don&apos;t have an account?</p>
+            <button type="button" className="auth-cta-link" onClick={onCreateAccount}>Create Account</button>
+          </div>
         </form>
         <p className="login-footer">Secure access powered by Project DNA</p>
+      </section>
+      <AuthVisual />
+    </main>
+  )
+}
+
+function ForgotPassword({ onBack, showNotice }) {
+  const [step, setStep] = useState(1)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const verifyEmail = async (event) => {
+    event.preventDefault()
+    if (!email.includes('@')) {
+      setError('Enter the email associated with your account.')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      await api.forgotPassword(email.trim())
+      setStep(2)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const resetPassword = async (event) => {
+    event.preventDefault()
+    if (password.length < 6) {
+      setError('Use a password with at least 6 characters.')
+      return
+    }
+    if (password !== confirm) {
+      setError('Passwords do not match.')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      await api.resetPassword({
+        email: email.trim(),
+        new_password: password,
+        confirm_password: confirm,
+      })
+      showNotice('Password updated. You can sign in now.')
+      onBack()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-panel">
+        <div className="login-brand"><div className="brand-mark"><Sparkles size={19} /></div>Project DNA</div>
+        <div className="login-copy signup-copy">
+          <p className="eyebrow">RESET PASSWORD</p>
+          <h1>{step === 1 ? 'Find your account.' : 'Choose a new password.'}</h1>
+          <p>
+            {step === 1
+              ? 'Enter your registered email to continue.'
+              : `Set a new password for ${email}.`}
+          </p>
+        </div>
+        {step === 1 ? (
+          <form onSubmit={verifyEmail} className="login-form">
+            <label>Email address<div className="input-wrap"><Mail size={17} /><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" /></div></label>
+            {error && <p className="form-error">{error}</p>}
+            <button className="login-button" type="submit" disabled={loading}>{loading ? 'Checking…' : 'Continue →'}</button>
+            <button className="back-button" type="button" onClick={onBack}>Back to sign in</button>
+          </form>
+        ) : (
+          <form onSubmit={resetPassword} className="login-form">
+            <label>New password<div className="input-wrap"><LockKeyhole size={17} /><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 6 characters" autoComplete="new-password" /></div></label>
+            <label>Confirm password<div className="input-wrap"><LockKeyhole size={17} /><input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Re-enter password" autoComplete="new-password" /></div></label>
+            {error && <p className="form-error">{error}</p>}
+            <button className="login-button" type="submit" disabled={loading}>{loading ? 'Updating…' : 'Update password →'}</button>
+            <button className="back-button" type="button" onClick={() => { setStep(1); setError('') }}>Use a different email</button>
+          </form>
+        )}
       </section>
       <AuthVisual />
     </main>
@@ -489,7 +733,7 @@ function Dashboard({ dashboard, project, onOpen }) {
             </div>
             <div className="health-bars">
               <Bar label="Coverage" value={`${coverage}%`} width={String(coverage)} color="green" />
-              <Bar label="AI confidence" value={`${Math.round(dashboard.ai_confidence || 0)}%`} width={String(Math.round(dashboard.ai_confidence || 0))} color="blue" />
+              <Bar label="AI confidence" value={`${Math.round(dashboard.ai_confidence || 0)}%`} width={String(Math.round(dashboard.ai_confidence || 0))} color="amber" />
               <Bar label="Sources" value={String(dashboard.connected_sources_count || 0)} width={String(Math.min(100, (dashboard.connected_sources_count || 0) * 25))} color="amber" />
             </div>
           </div>
@@ -578,7 +822,7 @@ function ProjectsPage({ token, projects, activeId, onSelect, onRefresh, onNotice
               setDescription('')
               onSelect(res.data.id)
               await onRefresh()
-            })
+            }, 'Project created successfully.')
           }}
         >
           <label>Project name<input value={name} onChange={(e) => setName(e.target.value)} required placeholder="Nova Web" /></label>
@@ -616,7 +860,7 @@ function ProjectsPage({ token, projects, activeId, onSelect, onRefresh, onNotice
               await api.connectGithub(token, activeId, repoUrl.trim())
               setRepoUrl('')
               await onRefresh()
-            })
+            }, 'Repository connected.')
           }}
         >
           <label className="grow">Repository URL<input value={repoUrl} onChange={(e) => setRepoUrl(e.target.value)} required placeholder="https://github.com/owner/repo" /></label>
@@ -632,7 +876,7 @@ function ProjectsPage({ token, projects, activeId, onSelect, onRefresh, onNotice
               runAction('Index project', async () => {
                 await api.indexProject(token, activeId)
                 await onRefresh()
-              })
+              }, 'Knowledge indexed.')
             }}
           >
             Index knowledge
@@ -672,7 +916,7 @@ function DocumentsPage({ token, project, onNotice, onRefresh, runAction }) {
                 const res = await api.listDocuments(token, project.id)
                 setDocs(res.data || [])
                 await onRefresh()
-              })
+              }, 'Document uploaded successfully.')
               e.target.value = ''
             }}
           />
@@ -764,7 +1008,7 @@ function RisksPage({ token, project, onNotice, runAction }) {
           onClick={() => runAction('Analyze risks', async () => {
             const res = await api.analyzeRisks(token, project.id)
             setRisks(res.data || [])
-          })}
+          }, 'Risk analysis generated.')}
         >
           <AlertTriangle size={16} /> Analyze
         </button>
@@ -841,20 +1085,161 @@ function GraphPage({ token, project, onNotice }) {
   )
 }
 
-function ChatPage({ messages, query, setQuery, onSend, project }) {
-  if (!project) return <PlaceholderPage name="AI Chat" hint="Create and index a project first." />
+function ChatMessage({ message }) {
+  if (message.role === 'user') {
+    return (
+      <article className="chat-bubble user">
+        <div className="chat-meta"><span>You</span></div>
+        <div className="chat-bubble-body">{message.text}</div>
+      </article>
+    )
+  }
+
   return (
-    <div className="card chat-page">
-      <div className="card-title"><div><h2>AI Chat</h2><p>RAG over {project.project_name}</p></div></div>
-      <div className="chat-messages tall">
-        {messages.length ? messages.map((m, i) => <div key={i} className={`message ${m.role}`}>{m.text}</div>) : (
-          <p className="muted">Ask a question after indexing GitHub/docs. OpenAI is primary; Gemini is fallback.</p>
+    <article className={`chat-bubble ai ${message.error ? 'error' : ''}`}>
+      <div className="chat-meta">
+        <span className="ai-label"><Bot size={14} /> Project DNA</span>
+      </div>
+      <div className="chat-bubble-body ai-body">
+        <div className="ai-section">
+          <h3>Answer</h3>
+          <MarkdownBody content={enhanceAnswerMarkdown(message.text)} />
+        </div>
+        {!!message.sources?.length && (
+          <div className="ai-section">
+            <h3>Sources</h3>
+            <ul className="source-list">
+              {message.sources.map((source) => (
+                <li key={source}><FileText size={14} /> {source}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {(message.confidence != null || message.model) && !message.error && (
+          <div className="ai-meta-row">
+            {message.confidence != null && (
+              <span className="ai-chip confidence">Confidence · {message.confidence}%</span>
+            )}
+            {message.model && (
+              <span className="ai-chip model">Model · {message.model}</span>
+            )}
+          </div>
         )}
       </div>
-      <form className="chat-input inline" onSubmit={(e) => { e.preventDefault(); onSend() }}>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Explain the authentication flow…" />
-        <button className="create-button" type="submit">Ask</button>
-      </form>
+    </article>
+  )
+}
+
+function ChatComposer({ query, setQuery, onSend, loading, disabled }) {
+  return (
+    <form
+      className="chat-composer"
+      onSubmit={(e) => {
+        e.preventDefault()
+        onSend()
+      }}
+    >
+      <textarea
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Ask anything about your connected project…"
+        rows={2}
+        disabled={disabled || loading}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+      />
+      <button className="create-button ask-button" type="submit" disabled={disabled || loading || !query.trim()}>
+        {loading ? 'Thinking…' : 'Ask'}
+      </button>
+    </form>
+  )
+}
+
+function ChatPage({ messages, query, setQuery, onSend, project, loading }) {
+  const scrollerRef = useRef(null)
+
+  useEffect(() => {
+    const node = scrollerRef.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [messages, loading])
+
+  if (!project) return <PlaceholderPage name="AI Chat" hint="Create and index a project first." />
+
+  return (
+    <div className="card chat-page modern">
+      <div className="card-title chat-page-title">
+        <div>
+          <h2>AI Knowledge Twin</h2>
+          <p>Grounded answers for {project.project_name}</p>
+        </div>
+      </div>
+      <div className="chat-thread" ref={scrollerRef}>
+        {!messages.length && !loading && (
+          <div className="chat-welcome">
+            <div className="welcome-icon"><Bot size={28} /></div>
+            <h3>Welcome to Project DNA AI Knowledge Twin</h3>
+            <p>Ask anything about your connected project.</p>
+            <div className="example-grid">
+              {CHAT_EXAMPLES.map((example) => (
+                <button key={example} type="button" onClick={() => onSend(example)}>{example}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((message) => (
+          <ChatMessage key={message.id || `${message.role}-${message.createdAt}`} message={message} />
+        ))}
+        {loading && (
+          <div className="typing-indicator">
+            <span className="typing-dots" aria-hidden="true"><i /><i /><i /></span>
+            <p>Project DNA is analyzing your knowledge base…</p>
+          </div>
+        )}
+      </div>
+      <ChatComposer query={query} setQuery={setQuery} onSend={onSend} loading={loading} />
+    </div>
+  )
+}
+
+function MiniChatPanel({ project, messages, query, setQuery, onSend, loading, onClose }) {
+  const scrollerRef = useRef(null)
+
+  useEffect(() => {
+    const node = scrollerRef.current
+    if (node) node.scrollTop = node.scrollHeight
+  }, [messages, loading])
+
+  return (
+    <div className="chat-panel">
+      <div className="chat-title">
+        <div>
+          <div className="bot-icon"><Bot size={18} /></div>
+          <span><strong>DNA Assistant</strong><small>{project?.project_name || 'Select a project'}</small></span>
+        </div>
+        <button className="icon-button" onClick={onClose} aria-label="Close chat"><X /></button>
+      </div>
+      <div className="chat-messages" ref={scrollerRef}>
+        {messages.length ? messages.map((m) => (
+          <ChatMessage key={m.id || `${m.role}-${m.createdAt}`} message={m} />
+        )) : (
+          <>
+            <p className="chat-greeting">Ask about this project’s knowledge twin.</p>
+            <button type="button" onClick={() => onSend('Summarize project risks')}>Summarize project risks</button>
+            <button type="button" onClick={() => onSend('What decisions were made recently?')}>Recent decisions</button>
+          </>
+        )}
+        {loading && (
+          <div className="typing-indicator compact">
+            <span className="typing-dots" aria-hidden="true"><i /><i /><i /></span>
+            <p>Analyzing…</p>
+          </div>
+        )}
+      </div>
+      <ChatComposer query={query} setQuery={setQuery} onSend={onSend} loading={loading} disabled={!project} />
     </div>
   )
 }
@@ -871,9 +1256,9 @@ function Stat({ icon: Icon, label, value, change, tone }) {
 function Bar({ label, value, width, color }) {
   return (
     <div className="bar-row">
-      <span>{label}</span>
+      <span className={`bar-label ${color}`}>{label}</span>
       <div className="bar"><i className={color} style={{ width: `${width}%` }} /></div>
-      <strong>{value}</strong>
+      <strong className={`bar-value ${color}`}>{value}</strong>
     </div>
   )
 }

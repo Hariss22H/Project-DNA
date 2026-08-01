@@ -13,8 +13,12 @@ import httpx
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.services.github.base import GitHubCommitSummary, GitHubRepositoryData, GitHubService
+from app.services.knowledge.documentation import select_documentation_paths
 
 logger = logging.getLogger(__name__)
+
+MAX_DOC_FILE_CHARS = 120_000
+MAX_DOC_FILES = 15
 
 GITHUB_URL_RE = re.compile(
     r"^https?://(www\.)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
@@ -87,6 +91,9 @@ class HttpGitHubService(GitHubService):
             structure, important_files = await self._fetch_structure(
                 client, owner, repo, default_branch
             )
+            documentation_files = await self._fetch_documentation_files(
+                client, owner, repo, structure
+            )
             languages = await self._fetch_json(
                 client, f"https://api.github.com/repos/{owner}/{repo}/languages"
             )
@@ -121,6 +128,7 @@ class HttpGitHubService(GitHubService):
             readme_content=readme,
             structure=structure,
             important_files=important_files,
+            documentation_files=documentation_files,
             languages=languages if isinstance(languages, dict) else {},
             topics=meta.get("topics") or [],
             commit_summary=commit_summary,
@@ -132,6 +140,23 @@ class HttpGitHubService(GitHubService):
                 "homepage": meta.get("homepage"),
             },
         )
+
+    async def fetch_documentation_files(
+        self,
+        repository_url: str,
+        structure: Optional[list[str]] = None,
+    ) -> list[dict[str, str]]:
+        """Fetch documentation file contents for an already-connected repository."""
+        owner, repo = self.parse_owner_repo(repository_url)
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers()) as client:
+            paths = structure
+            if not paths:
+                meta_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}")
+                if meta_resp.status_code != 200:
+                    return []
+                branch = (meta_resp.json() or {}).get("default_branch") or "main"
+                paths, _ = await self._fetch_structure(client, owner, repo, branch)
+            return await self._fetch_documentation_files(client, owner, repo, paths or [])
 
     async def _fetch_readme(
         self, client: httpx.AsyncClient, owner: str, repo: str
@@ -169,7 +194,7 @@ class HttpGitHubService(GitHubService):
         tree = response.json().get("tree") or []
         paths = [item.get("path") for item in tree if item.get("path")]
         # Keep payload small for hackathon demo storage.
-        structure = paths[:200]
+        structure = paths[:400]
         important_names = {
             "readme.md",
             "readme",
@@ -179,15 +204,71 @@ class HttpGitHubService(GitHubService):
             "dockerfile",
             "docker-compose.yml",
             "architecture.md",
+            "architecture.pdf",
+            "architecture.docx",
             "docs/architecture.md",
+            "task.md",
+            "spec.md",
+            "specification.md",
+            "contributing.md",
+            "changelog.md",
         }
         important_files = [
             path
             for path in structure
             if path.lower().split("/")[-1] in important_names
             or path.lower() in important_names
-        ][:40]
+            or "architecture" in path.lower().split("/")[-1]
+        ][:60]
         return structure, important_files
+
+    async def _fetch_documentation_files(
+        self,
+        client: httpx.AsyncClient,
+        owner: str,
+        repo: str,
+        structure: list[str],
+    ) -> list[dict[str, str]]:
+        files: list[dict[str, str]] = []
+        for path in select_documentation_paths(structure, limit=MAX_DOC_FILES):
+            content = await self._fetch_file_text(client, owner, repo, path)
+            if not content:
+                continue
+            files.append({"path": path, "content": content[:MAX_DOC_FILE_CHARS]})
+        return files
+
+    async def _fetch_file_text(
+        self,
+        client: httpx.AsyncClient,
+        owner: str,
+        repo: str,
+        path: str,
+    ) -> Optional[str]:
+        response = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        # Skip large/binary blobs.
+        size = int(payload.get("size") or 0)
+        if size <= 0 or size > 1_500_000:
+            return None
+        encoding = payload.get("encoding")
+        content = payload.get("content")
+        if not content or encoding != "base64":
+            return None
+        try:
+            decoded = base64.b64decode(content).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to decode %s from %s/%s", path, owner, repo)
+            return None
+        # Ignore mostly-binary payloads.
+        if "\x00" in decoded:
+            return None
+        return decoded.strip() or None
 
     async def _fetch_json(
         self,
