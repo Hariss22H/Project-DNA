@@ -8,3 +8,9 @@ This is the FastAPI backend for Project-DNA.
 3. Install dependencies: `pip install -r requirements.txt`
 4. Copy `.env.example` to `.env`
 5. Run the server: `uvicorn app.main:app --reload`
+
+## Demo Video
+
+Watch the complete demonstration of *Project DNA* here:
+
+🔗 Demo Video: https://youtu.be/your-demo-video-link
