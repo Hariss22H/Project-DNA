@@ -8,6 +8,7 @@ This is the FastAPI backend for Project-DNA.
 3. Install dependencies: `pip install -r requirements.txt`
 4. Copy `.env.example` to `.env`
 5. Run the server: `uvicorn app.main:app --reload`
+6. Start the API locally: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
 
 ## Demo Video
 
