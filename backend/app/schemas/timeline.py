@@ -14,6 +14,7 @@ class TimelineEventPublic(BaseModel):
     event_type: str
     title: str
     description: Optional[str] = None
+    source: str = "System"
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 

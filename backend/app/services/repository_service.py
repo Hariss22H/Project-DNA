@@ -97,7 +97,7 @@ class RepositoryService:
                 event_type="repository_connected",
                 title="Repository Connected",
                 description=f"Connected {fetched.full_name}",
-                metadata={"repository_url": fetched.repository_url},
+                metadata={"repository_url": fetched.repository_url, "source": "GitHub"},
             )
         )
         if fetched.readme_content:
@@ -105,11 +105,11 @@ class RepositoryService:
                 TimelineEvent(
                     project_id=project_id,
                     event_type="readme_indexed",
-                    title="README Indexed",
-                    description=f"README extracted from {fetched.full_name}",
-                    metadata={"chars": len(fetched.readme_content)},
-                )
+                title="README Processed",
+                description=f"README extracted from {fetched.full_name}",
+                metadata={"chars": len(fetched.readme_content), "source": "Documentation"},
             )
+        )
 
         return serialize_repository(payload)
 

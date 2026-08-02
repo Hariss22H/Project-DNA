@@ -94,18 +94,17 @@ class DocumentService:
         result = await self.collection.insert_one(doc)
         doc["_id"] = result.inserted_id
 
-        event_title = "Architecture Uploaded" if is_architecture else "Document Uploaded"
-        event_type = "architecture_uploaded" if is_architecture else "document_uploaded"
         await services.timeline.add_event(
             TimelineEvent(
                 project_id=project_id,
-                event_type=event_type,
-                title=event_title,
-                description=safe_name,
+                event_type="document_uploaded",
+                title="Documentation Uploaded",
+                description=f"Processed {safe_name} into project memory.",
                 metadata={
                     "document_id": str(result.inserted_id),
                     "file_type": file_type.value,
                     "char_count": extracted.char_count,
+                    "source": "Document",
                 },
             )
         )

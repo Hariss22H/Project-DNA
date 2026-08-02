@@ -1,11 +1,80 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
-  Activity, AlertTriangle, Bell, Bot, ChevronDown, CircleHelp, FileText,
-  FolderKanban, GitBranch, LayoutDashboard, Menu, MoreHorizontal, Plus,
-  Search, Settings, ShieldAlert, Sparkles, Upload, Users, X, LockKeyhole, Mail
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  MarkerType,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+import {
+  Activity, AlertTriangle, Bell, Bot, Boxes, ChevronDown, CircleHelp, Clock,
+  Cpu, Download, FileText, FolderKanban, GitBranch, LayoutDashboard, Layers,
+  ListChecks, Map, Menu, MoreHorizontal, Plus, Route, Search, Settings,
+  ShieldAlert, Sparkles, Target, Upload, Users, X, LockKeyhole, Mail
 } from 'lucide-react'
 import { api } from './api'
+
+const GRAPH_TYPE_COLORS = {
+  technology: { bg: '#eaf4ff', border: '#3b82c4', text: '#1e4f7a' },
+  module: { bg: '#f0ebff', border: '#7c5cde', text: '#3d2b7a' },
+  document: { bg: '#e8f8ef', border: '#2f9d63', text: '#1d6b42' },
+  api: { bg: '#fff5de', border: '#d97706', text: '#92400e' },
+  feature: { bg: '#fce7f3', border: '#db2777', text: '#9d174d' },
+  repository: { bg: '#ede9fe', border: '#6d28d9', text: '#4c1d95' },
+  file: { bg: '#f3f4f6', border: '#6b7280', text: '#374151' },
+  other: { bg: '#f8fafc', border: '#94a3b8', text: '#334155' },
+}
+
+function layoutGraphNodes(rawNodes = []) {
+  const groups = {
+    repository: [],
+    module: [],
+    technology: [],
+    api: [],
+    feature: [],
+    document: [],
+    file: [],
+    other: [],
+  }
+  rawNodes.forEach((node) => {
+    const type = groups[node.type] ? node.type : 'other'
+    groups[type].push(node)
+  })
+  const layers = ['repository', 'module', 'technology', 'api', 'feature', 'document', 'file', 'other']
+  const positioned = []
+  layers.forEach((type, layerIndex) => {
+    const items = groups[type]
+    items.forEach((node, index) => {
+      const colors = GRAPH_TYPE_COLORS[type] || GRAPH_TYPE_COLORS.other
+      positioned.push({
+        id: node.id,
+        position: {
+          x: 40 + (index % 4) * 210,
+          y: 40 + layerIndex * 130 + Math.floor(index / 4) * 20,
+        },
+        data: {
+          label: node.label,
+          type: node.type,
+          meta: node.data || {},
+        },
+        style: {
+          background: colors.bg,
+          border: `1.5px solid ${colors.border}`,
+          color: colors.text,
+          borderRadius: 12,
+          padding: '10px 12px',
+          fontSize: 12,
+          fontWeight: 600,
+          minWidth: 140,
+          boxShadow: '0 4px 14px #1d173314',
+        },
+      })
+    })
+  })
+  return positioned
+}
 
 const navigation = [
   ['Dashboard', LayoutDashboard], ['Projects', FolderKanban], ['Knowledge Graph', GitBranch],
@@ -276,8 +345,7 @@ function App() {
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="brand">
-          <div className="brand-mark"><Sparkles size={18} /></div>
-          <span>Project DNA</span>
+          <img className="brand-logo brand-logo-sidebar" src="/project-dna-logo-dark.png" alt="Project DNA" />
           <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><X /></button>
         </div>
         <nav aria-label="Main navigation">
@@ -378,9 +446,12 @@ function App() {
           </div>
           {active === 'Dashboard' && (
             <Dashboard
+              token={auth.token}
               dashboard={dashboard}
               project={activeProject}
               onOpen={(page) => setActive(page)}
+              onNotice={showNotice}
+              runAction={runAction}
             />
           )}
           {active === 'Projects' && (
@@ -395,7 +466,7 @@ function App() {
             />
           )}
           {active === 'Knowledge Graph' && (
-            <GraphPage token={auth.token} project={activeProject} onNotice={showNotice} />
+            <GraphPage token={auth.token} project={activeProject} onNotice={showNotice} runAction={runAction} />
           )}
           {active === 'AI Chat' && (
             <ChatPage
@@ -502,7 +573,7 @@ function Signup({ onLogin, onBack, showNotice }) {
   return (
     <main className="login-page">
       <section className="login-panel">
-        <div className="login-brand"><div className="brand-mark"><Sparkles size={19} /></div>Project DNA</div>
+        <img className="brand-logo brand-logo-login" src="/project-dna-logo.png" alt="Project DNA" />
         <div className="login-copy signup-copy">
           <p className="eyebrow">CREATE YOUR ACCOUNT</p>
           <h1>Start building your organization’s memory.</h1>
@@ -564,7 +635,7 @@ function Login({ onLogin, showNotice, onCreateAccount, onForgotPassword }) {
   return (
     <main className="login-page">
       <section className="login-panel">
-        <div className="login-brand"><div className="brand-mark"><Sparkles size={19} /></div>Project DNA</div>
+        <img className="brand-logo brand-logo-login" src="/project-dna-logo.png" alt="Project DNA" />
         <div className="login-copy">
           <p className="eyebrow">WELCOME BACK</p>
           <h1>Your project memory, connected.</h1>
@@ -652,7 +723,7 @@ function ForgotPassword({ onBack, showNotice }) {
   return (
     <main className="login-page">
       <section className="login-panel">
-        <div className="login-brand"><div className="brand-mark"><Sparkles size={19} /></div>Project DNA</div>
+        <img className="brand-logo brand-logo-login" src="/project-dna-logo.png" alt="Project DNA" />
         <div className="login-copy signup-copy">
           <p className="eyebrow">RESET PASSWORD</p>
           <h1>{step === 1 ? 'Find your account.' : 'Choose a new password.'}</h1>
@@ -690,7 +761,7 @@ function AuthVisual() {
       <div className="orb orb-one" />
       <div className="orb orb-two" />
       <div className="visual-content">
-        <div className="visual-logo"><Sparkles /> Project DNA</div>
+        <img className="brand-logo brand-logo-visual" src="/project-dna-logo-dark.png" alt="Project DNA" />
         <h2>Bring clarity to every project decision.</h2>
         <p>Turn your team’s scattered knowledge into an intelligent, searchable memory.</p>
         <div className="visual-stats">
@@ -702,7 +773,26 @@ function AuthVisual() {
   )
 }
 
-function Dashboard({ dashboard, project, onOpen }) {
+const ONBOARDING_ICONS = {
+  sparkles: Sparkles,
+  target: Target,
+  layers: Layers,
+  cpu: Cpu,
+  boxes: Boxes,
+  route: Route,
+  'git-branch': GitBranch,
+  'file-text': FileText,
+  'shield-alert': ShieldAlert,
+  map: Map,
+  clock: Clock,
+  'list-checks': ListChecks,
+}
+
+function Dashboard({ token, dashboard, project, onOpen, onNotice, runAction }) {
+  const [briefing, setBriefing] = useState(null)
+  const [briefingLoading, setBriefingLoading] = useState(false)
+  const [openSections, setOpenSections] = useState({})
+
   if (!project) {
     return <PlaceholderPage name="Dashboard" hint="Create a project on the Projects page to load live KPIs." />
   }
@@ -716,8 +806,120 @@ function Dashboard({ dashboard, project, onOpen }) {
   const coverage = Math.round(dashboard.knowledge_coverage || 0)
   const insight = dashboard.ai_insights?.[0]
 
+  async function generateBriefing() {
+    setBriefingLoading(true)
+    try {
+      await runAction(
+        'Generate onboarding briefing',
+        async () => {
+          const res = await api.generateBriefing(token, project.id)
+          setBriefing(res.data)
+          const defaults = {}
+          ;(res.data.sections || []).forEach((section, index) => {
+            defaults[section.title] = index < 3
+          })
+          setOpenSections(defaults)
+        },
+        'Onboarding briefing ready',
+      )
+    } finally {
+      setBriefingLoading(false)
+    }
+  }
+
+  function toggleSection(title) {
+    setOpenSections((prev) => ({ ...prev, [title]: !prev[title] }))
+  }
+
+  function downloadBriefing() {
+    if (!briefing?.markdown) return
+    const blob = new Blob([briefing.markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${(briefing.project_name || 'project').replace(/\s+/g, '-').toLowerCase()}-onboarding-briefing.md`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function printBriefingPdf() {
+    if (!briefing) return
+    const win = window.open('', '_blank', 'noopener,noreferrer,width=900,height=700')
+    if (!win) {
+      onNotice?.('Allow pop-ups to download the PDF')
+      return
+    }
+    const body = (briefing.sections || [])
+      .map((section) => `<h2>${section.title}</h2>${markdownToSimpleHtml(section.content)}`)
+      .join('')
+    win.document.write(`<!doctype html><html><head><title>${briefing.title}</title>
+      <style>
+        body{font-family:Georgia,serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1726;line-height:1.5}
+        h1{font-family:'Segoe UI',sans-serif;font-size:26px} h2{font-family:'Segoe UI',sans-serif;font-size:18px;margin-top:28px;border-bottom:1px solid #ddd;padding-bottom:6px}
+        ul{padding-left:20px} p{margin:8px 0} .meta{color:#666;font-size:13px;margin-bottom:24px}
+      </style></head><body>
+      <h1>${briefing.title}</h1>
+      <p class="meta">Generated by Project DNA Knowledge Twin · ${Math.round(briefing.confidence || 0)}% retrieval confidence · ${briefing.retrieved_count || 0} sources</p>
+      ${body}
+      <script>window.onload=()=>{window.print()}</script>
+      </body></html>`)
+    win.document.close()
+  }
+
   return (
     <>
+      <section className="onboarding-hero">
+        <div className="onboarding-hero-glow" aria-hidden="true" />
+        <div className="onboarding-hero-icon"><Sparkles size={28} /></div>
+        <div className="onboarding-hero-copy">
+          <p className="eyebrow">KNOWLEDGE TWIN</p>
+          <h2>🚀 AI Project Onboarding Assistant</h2>
+          <p>Generate an AI briefing for a new developer joining this project.</p>
+        </div>
+        <button className="create-button onboarding-cta" onClick={generateBriefing} disabled={briefingLoading}>
+          <Sparkles size={17} />
+          {briefingLoading ? 'Generating…' : 'Generate Briefing'}
+        </button>
+      </section>
+
+      {briefing && (
+        <section className="onboarding-report" id="onboarding-report">
+          <div className="onboarding-report-header">
+            <div>
+              <h2>{briefing.title}</h2>
+              <p>
+                Grounded in {briefing.retrieved_count || 0} retrieved chunks · {Math.round(briefing.confidence || 0)}% confidence · {briefing.model_used}
+                {briefing.response_time_ms != null ? ` · ${briefing.response_time_ms}ms` : ''}
+              </p>
+            </div>
+            <div className="onboarding-actions">
+              <button className="outline-button" onClick={downloadBriefing}><Download size={16} /> Download Markdown</button>
+              <button className="outline-button" onClick={printBriefingPdf}><FileText size={16} /> Download Briefing (PDF)</button>
+            </div>
+          </div>
+          <div className="onboarding-sections">
+            {(briefing.sections || []).map((section) => {
+              const Icon = ONBOARDING_ICONS[section.icon] || Sparkles
+              const open = !!openSections[section.title]
+              return (
+                <article className={`onboarding-section ${open ? 'open' : ''}`} key={section.title}>
+                  <button type="button" className="onboarding-section-toggle" onClick={() => toggleSection(section.title)}>
+                    <span className="onboarding-section-icon"><Icon size={18} /></span>
+                    <strong>{section.title}</strong>
+                    <ChevronDown size={18} className={`chevron ${open ? 'up' : ''}`} />
+                  </button>
+                  {open && (
+                    <div className="onboarding-section-body">
+                      <ReactMarkdown>{section.content}</ReactMarkdown>
+                    </div>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
       <section className="stats-grid">
         <Stat icon={FolderKanban} label="Project status" value={dashboard.project_status} change={dashboard.github_connected ? 'GitHub connected' : 'No GitHub yet'} tone="purple" />
         <Stat icon={Activity} label="Project health" value={`${health}%`} change={dashboard.health_label || '—'} tone="green" />
@@ -798,6 +1000,36 @@ function Dashboard({ dashboard, project, onOpen }) {
       )}
     </>
   )
+}
+
+function markdownToSimpleHtml(markdown) {
+  const escaped = String(markdown || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  const withBold = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  const lines = withBold.split('\n')
+  const html = []
+  let inList = false
+  for (const line of lines) {
+    const bullet = line.match(/^\s*[-*]\s+(.+)/)
+    const numbered = line.match(/^\s*\d+\.\s+(.+)/)
+    if (bullet || numbered) {
+      if (!inList) {
+        html.push('<ul>')
+        inList = true
+      }
+      html.push(`<li>${(bullet || numbered)[1]}</li>`)
+      continue
+    }
+    if (inList) {
+      html.push('</ul>')
+      inList = false
+    }
+    if (line.trim()) html.push(`<p>${line}</p>`)
+  }
+  if (inList) html.push('</ul>')
+  return html.join('')
 }
 
 function ProjectsPage({ token, projects, activeId, onSelect, onRefresh, onNotice, runAction }) {
@@ -940,44 +1172,54 @@ function DocumentsPage({ token, project, onNotice, onRefresh, runAction }) {
 
 function TimelinePage({ token, project, onNotice }) {
   const [events, setEvents] = useState([])
-  const [localEvents, setLocalEvents] = useState([])
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!token || !project) return
+    setLoading(true)
     api.getTimeline(token, project.id)
       .then((res) => setEvents(res.data || []))
       .catch((error) => onNotice(error.message))
-    api.generateLocalTimeline()
-      .then((res) => setLocalEvents(Array.isArray(res) ? res : []))
-      .catch(() => setLocalEvents([]))
+      .finally(() => setLoading(false))
   }, [token, project, onNotice])
 
   if (!project) return <PlaceholderPage name="Timeline" hint="Create a project first." />
 
-  const merged = [
-    ...events.map((e) => ({
-      date: e.created_at,
-      event: e.title,
-      source: e.event_type || 'Project',
-      detail: e.description,
-    })),
-    ...localEvents,
-  ].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  const sourceTone = (source = '') => {
+    const value = source.toLowerCase()
+    if (value.includes('github')) return 'purple'
+    if (value.includes('document') || value.includes('documentation')) return 'green'
+    if (value.includes('ai')) return 'amber'
+    return 'blue'
+  }
 
   return (
-    <div className="card">
-      <div className="card-title"><div><h2>Timeline</h2><p>Project events + Member 3 local/GitHub generator</p></div></div>
-      <div className="activity-list">
-        {merged.map((event, index) => (
-          <div className="activity-item" key={`${event.event}-${index}`}>
-            <div className="activity-icon blue"><Activity size={17} /></div>
-            <div>
-              <strong>{event.event || event.title}</strong>
-              <span>{[event.source, event.author, event.date, event.detail].filter(Boolean).join(' · ')}</span>
+    <div className="card timeline-card">
+      <div className="card-title">
+        <div>
+          <h2>Project Memory Timeline</h2>
+          <p>The story of how this project’s knowledge twin evolved</p>
+        </div>
+      </div>
+      <div className="timeline-story">
+        {events.map((event, index) => (
+          <article className="timeline-story-item" key={`${event.id || event.title}-${index}`}>
+            <div className={`activity-icon ${sourceTone(event.source)}`}><Activity size={17} /></div>
+            <div className="timeline-story-body">
+              <div className="timeline-story-head">
+                <strong>{event.title}</strong>
+                <span className="timeline-source">{event.source || event.event_type || 'System'}</span>
+              </div>
+              <p>{event.description || 'No additional detail.'}</p>
+              <small>
+                {event.created_at ? new Date(event.created_at).toLocaleString() : 'Unknown time'}
+                {event.metadata?.author ? ` · ${event.metadata.author}` : ''}
+              </small>
             </div>
-          </div>
+          </article>
         ))}
-        {!merged.length && <p className="muted">No timeline events yet.</p>}
+        {loading && <p className="muted">Loading project memory…</p>}
+        {!loading && !events.length && <p className="muted">No timeline events yet. Connect GitHub, upload docs, or index the project.</p>}
       </div>
     </div>
   )
@@ -1000,9 +1242,12 @@ function RisksPage({ token, project, onNotice, runAction }) {
   if (!project) return <PlaceholderPage name="Risk Dashboard" hint="Create a project first." />
 
   return (
-    <div className="card">
+    <div className="card risks-dashboard">
       <div className="card-title">
-        <div><h2>Risk Dashboard</h2><p>Rule-based knowledge risks</p></div>
+        <div>
+          <h2>AI Project Consultant</h2>
+          <p>Context-aware risks from README, docs, structure, and commit history</p>
+        </div>
         <button
           className="create-button"
           onClick={() => runAction('Analyze risks', async () => {
@@ -1013,7 +1258,7 @@ function RisksPage({ token, project, onNotice, runAction }) {
           <AlertTriangle size={16} /> Analyze
         </button>
       </div>
-      <div className="risk-list">
+      <div className="risk-cards">
         {risks.map((risk) => {
           const color = String(risk.severity || '').toLowerCase().includes('high')
             ? 'red'
@@ -1021,66 +1266,143 @@ function RisksPage({ token, project, onNotice, runAction }) {
               ? 'amber'
               : 'blue'
           return (
-            <div className="risk" key={risk.id || risk.title}>
-              <span className={`risk-dot ${color}`} />
-              <div>
-                <div><span className={`level ${color}`}>{risk.severity || 'Low'}</span><strong>{risk.title}</strong></div>
+            <article className={`risk-card ${color}`} key={risk.id || risk.title}>
+              <div className="risk-card-head">
+                <span className={`level ${color}`}>{risk.severity || 'Low'}</span>
+                <strong>{risk.title}</strong>
+              </div>
+              <div className="risk-section">
+                <h4>AI Explanation</h4>
                 <p>{risk.description}</p>
               </div>
-            </div>
+              {!!risk.evidence?.length && (
+                <div className="risk-section">
+                  <h4>Supporting Evidence</h4>
+                  <ul>
+                    {risk.evidence.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {!!risk.recommendation && (
+                <div className="risk-section recommendation">
+                  <h4>Suggested Recommendation</h4>
+                  <p>{risk.recommendation}</p>
+                </div>
+              )}
+            </article>
           )
         })}
-        {!risks.length && <p className="muted">No risks yet. Click Analyze after connecting sources.</p>}
+        {!risks.length && (
+          <p className="muted">No risks yet. Click Analyze after connecting sources and indexing knowledge.</p>
+        )}
       </div>
     </div>
   )
 }
 
-function GraphPage({ token, project, onNotice }) {
+function GraphPage({ token, project, onNotice, runAction }) {
   const [graph, setGraph] = useState(null)
-  const [localGraph, setLocalGraph] = useState(null)
+  const [selected, setSelected] = useState(null)
+
+  const load = useCallback(async () => {
+    if (!token || !project) return
+    const res = await api.getGraph(token, project.id)
+    setGraph(res.data)
+  }, [token, project])
 
   useEffect(() => {
-    if (!token || !project) return
-    api.getGraph(token, project.id)
-      .then((res) => setGraph(res.data))
-      .catch((error) => onNotice(error.message))
-    api.generateLocalGraph()
-      .then((res) => setLocalGraph(res))
-      .catch(() => setLocalGraph(null))
-  }, [token, project, onNotice])
+    load().catch((error) => onNotice(error.message))
+  }, [load, onNotice])
+
+  const flowNodes = useMemo(() => layoutGraphNodes(graph?.nodes || []), [graph])
+  const flowEdges = useMemo(() => (
+    (graph?.edges || []).map((edge) => ({
+      id: edge.id || `${edge.source}-${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label || edge.relation,
+      data: edge.data || {},
+      animated: ['uses', 'built_with', 'communicates_with', 'documents'].includes(edge.relation),
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+      style: { stroke: '#8b8794', strokeWidth: 1.4 },
+      labelStyle: { fill: '#5b5568', fontSize: 10, fontWeight: 600 },
+    }))
+  ), [graph])
 
   if (!project) return <PlaceholderPage name="Knowledge Graph" hint="Create a project first." />
 
-  const nodes = graph?.nodes?.length ? graph.nodes : localGraph?.nodes || []
-  const edges = graph?.edges?.length ? graph.edges : localGraph?.edges || []
-
   return (
-    <div className="workspace-grid">
-      <div className="card">
-        <div className="card-title"><div><h2>Nodes</h2><p>{nodes.length} entities</p></div></div>
-        <div className="mini-list scroll">
-          {nodes.slice(0, 40).map((node) => (
-            <div className="mini-row" key={node.id}>
-              <strong>{node.label || node.id}</strong>
-              <span>{node.type || node.data?.type || 'node'}</span>
-            </div>
+    <div className="graph-layout">
+      <div className="card graph-canvas-card">
+        <div className="card-title">
+          <div>
+            <h2>Semantic Knowledge Graph</h2>
+            <p>{graph?.entity_count || 0} concepts · click a node or edge to inspect</p>
+          </div>
+          <button
+            className="outline-button"
+            onClick={() => runAction('Rebuild graph', async () => {
+              const res = await api.rebuildGraph(token, project.id)
+              setGraph(res.data)
+            }, 'Knowledge graph rebuilt.')}
+          >
+            Rebuild
+          </button>
+        </div>
+        <div className="graph-legend">
+          {Object.entries(GRAPH_TYPE_COLORS).slice(0, 6).map(([type, colors]) => (
+            <span key={type} style={{ background: colors.bg, borderColor: colors.border, color: colors.text }}>{type}</span>
           ))}
-          {!nodes.length && <p className="muted">No graph nodes yet. Index the project or generate the local graph.</p>}
+        </div>
+        <div className="graph-canvas">
+          {(graph?.nodes || []).length ? (
+            <ReactFlow
+              nodes={flowNodes}
+              edges={flowEdges}
+              fitView
+              attributionPosition="bottom-left"
+              onNodeClick={(_, node) => setSelected({
+                kind: 'node',
+                title: node.data.label,
+                type: node.data.type,
+                body: node.data.meta?.summary || 'Semantic concept extracted from project knowledge.',
+                meta: node.data.meta,
+              })}
+              onEdgeClick={(_, edge) => setSelected({
+                kind: 'edge',
+                title: edge.label || edge.data?.explanation || 'Relationship',
+                type: edge.data?.relation || 'relation',
+                body: edge.data?.explanation || `${edge.source} → ${edge.target}`,
+                meta: edge.data,
+              })}
+              onPaneClick={() => setSelected(null)}
+            >
+              <Background gap={18} size={1} color="#e7e3ef" />
+              <MiniMap pannable zoomable />
+              <Controls />
+            </ReactFlow>
+          ) : (
+            <div className="graph-empty">
+              <p className="muted">No graph yet. Index the project or rebuild the semantic graph.</p>
+            </div>
+          )}
         </div>
       </div>
-      <div className="card">
-        <div className="card-title"><div><h2>Edges</h2><p>{edges.length} relations</p></div></div>
-        <div className="mini-list scroll">
-          {edges.slice(0, 40).map((edge, index) => (
-            <div className="mini-row" key={`${edge.source}-${edge.target}-${index}`}>
-              <strong>{edge.source} → {edge.target}</strong>
-              <span>{edge.relation || edge.label || 'related'}</span>
-            </div>
-          ))}
-          {!edges.length && <p className="muted">No edges yet.</p>}
-        </div>
-      </div>
+      <aside className="card graph-details">
+        <div className="card-title"><div><h2>Inspector</h2><p>Node and relationship details</p></div></div>
+        {selected ? (
+          <div className="graph-inspector">
+            <span className="badge positive">{selected.kind}</span>
+            <h3>{selected.title}</h3>
+            <p className="muted">{selected.type}</p>
+            <p>{selected.body}</p>
+            {selected.meta?.path && <p><strong>Path:</strong> {selected.meta.path}</p>}
+            {selected.meta?.source && <p><strong>Source:</strong> {selected.meta.source}</p>}
+          </div>
+        ) : (
+          <p className="muted">Select a concept or relationship to understand how Project DNA models this system.</p>
+        )}
+      </aside>
     </div>
   )
 }

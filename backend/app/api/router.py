@@ -15,6 +15,7 @@ from app.api import (
     m3_graph,
     m3_timeline,
     metadata,
+    onboarding,
     pdf,
     projects,
     repositories,
@@ -35,6 +36,7 @@ api_router.include_router(repositories.router)
 api_router.include_router(documents.router)
 api_router.include_router(indexing.router)
 api_router.include_router(chat.router)
+api_router.include_router(onboarding.router)
 api_router.include_router(timeline.router)
 api_router.include_router(risks.router)
 api_router.include_router(dashboard.router)

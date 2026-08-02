@@ -1,4 +1,4 @@
-"""Context-aware risk detection with optional LLM summarization."""
+"""Context-aware AI risk detection with evidence and recommendations."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from app.services.knowledge.documentation import (
     has_topic,
     source_inventory,
 )
+from app.services.knowledge.semantics import evidence_snippets, structure_signals
 from app.services.llm.fallback import LLMFallbackManager
 from app.services.project_service import ProjectService
 from app.services.timeline.base import TimelineEvent
@@ -50,7 +51,7 @@ class RiskEngine:
 
         detected = self._detect_risks(repo=repo, docs=docs, chunks_indexed=chunks_indexed)
         if self.use_llm_summary and detected:
-            detected = await self._enrich_with_llm(detected)
+            detected = await self._enrich_with_llm(detected, repo=repo, docs=docs)
 
         await self.collection.delete_many({"project_id": project_id})
         now = utc_now()
@@ -63,6 +64,7 @@ class RiskEngine:
                 "description": risk["description"],
                 "severity": risk["severity"],
                 "recommendation": risk["recommendation"],
+                "evidence": risk.get("evidence") or [],
                 "rule_id": risk["rule_id"],
                 "generated_at": now,
                 "created_at": now,
@@ -75,9 +77,9 @@ class RiskEngine:
             TimelineEvent(
                 project_id=project_id,
                 event_type="risk_generated",
-                title="Risk Generated",
-                description=f"Generated {len(stored)} project risk insight(s)",
-                metadata={"count": len(stored)},
+                title="Risk Analysis Completed",
+                description=f"AI consultant generated {len(stored)} context-aware risk insight(s).",
+                metadata={"count": len(stored), "source": "AI"},
             )
         )
         return stored
@@ -97,6 +99,8 @@ class RiskEngine:
         risks: list[dict[str, Any]] = []
         inventory = source_inventory(repo=repo, docs=docs)
         knowledge = combine_knowledge_text(repo=repo, docs=docs)
+        signals = structure_signals((repo or {}).get("structure") or [])
+        source_names = _source_names(repo=repo, docs=docs)
 
         if repo is None and inventory["uploaded_doc_count"] == 0:
             risks.append(
@@ -106,6 +110,7 @@ class RiskEngine:
                     description="This project has neither a GitHub repository nor uploaded documents.",
                     severity="high",
                     recommendation="Connect a public GitHub repository or upload project documentation.",
+                    evidence=["No repository connected", "No uploaded documents"],
                 )
             )
             return risks
@@ -121,6 +126,7 @@ class RiskEngine:
                     ),
                     severity="high",
                     recommendation="Add a README.md that explains purpose, setup, and key modules.",
+                    evidence=["Repository connected but README content is empty"],
                 )
             )
         elif inventory["has_readme"] and inventory["readme_chars"] < 180 and not has_topic(knowledge, "overview"):
@@ -134,48 +140,129 @@ class RiskEngine:
                     ),
                     severity="medium",
                     recommendation="Expand README/overview docs with goals, users, and major components.",
+                    evidence=[
+                        f"README is only {inventory['readme_chars']} characters",
+                        *source_names[:2],
+                    ],
                 )
             )
 
-        # Architecture risk is content-aware: README/docs that explain architecture are enough.
+        # Content-aware architecture: README explanation is enough.
         if not has_topic(knowledge, "architecture"):
             risks.append(
                 _risk(
                     rule_id="missing_architecture_knowledge",
-                    title="Missing architecture knowledge",
+                    title="Architecture is not explained clearly",
                     description=(
                         "Indexed sources do not describe system architecture, components, or tech stack "
                         "clearly enough for reliable onboarding."
                     ),
                     severity="medium",
                     recommendation=(
-                        "Document architecture in README, architecture notes, or design docs — "
-                        "filename alone is not required if the knowledge exists."
+                        "Add a short architecture section covering major components and data flow. "
+                        "A dedicated Architecture.pdf is optional if README already explains it."
                     ),
+                    evidence=[
+                        "No architecture/system-design explanation found in indexed knowledge",
+                        f"Reviewed sources: {', '.join(source_names[:4]) or 'none'}",
+                    ],
                 )
             )
 
-        if not has_topic(knowledge, "testing"):
+        if not has_topic(knowledge, "api") and (signals["api_paths"] or signals["has_backend"]):
+            risks.append(
+                _risk(
+                    rule_id="missing_api_documentation",
+                    title="Missing API documentation",
+                    description=(
+                        "The project appears to expose backend/API surfaces, but indexed knowledge "
+                        "does not explain endpoints, contracts, or usage."
+                    ),
+                    severity="medium",
+                    recommendation="Document key APIs, auth requirements, and example requests in README or API notes.",
+                    evidence=[
+                        *(f"API-related path: {path}" for path in signals["api_paths"][:3]),
+                        "Little or no API explanation found in documentation text",
+                    ],
+                )
+            )
+
+        if signals["has_auth_code"] and not _auth_documented_well(knowledge):
+            auth_evidence = [f"Auth-related path: {path}" for path in signals["auth_paths"][:3]]
+            auth_evidence.extend(
+                evidence_snippets(knowledge, ("auth", "jwt", "login", "token"), limit=1)
+                or ["Authentication terms appear thinly or not at all in docs"]
+            )
+            risks.append(
+                _risk(
+                    rule_id="auth_module_underdocumented",
+                    title="Authentication module has limited documentation",
+                    description=(
+                        "The repository contains authentication-related code, but there is little "
+                        "explanation of token flow, security decisions, or implementation details."
+                    ),
+                    severity="high",
+                    recommendation=(
+                        "Add a short authentication design section covering login, token issuance, "
+                        "and protected-route behavior."
+                    ),
+                    evidence=auth_evidence,
+                )
+            )
+
+        if not has_topic(knowledge, "testing") and not signals["has_tests"]:
             risks.append(
                 _risk(
                     rule_id="no_testing_documentation",
-                    title="No testing documentation",
-                    description="No clear testing guidance was found across README, docs, or uploads.",
+                    title="No testing or testing guide found",
+                    description="No clear testing guidance or test suites were found across code and docs.",
                     severity="medium",
-                    recommendation="Document how to run tests, what suites exist, and quality expectations.",
+                    recommendation="Document how to run tests and add at least a basic test guide for critical flows.",
+                    evidence=["No testing keywords in docs", "No obvious test directories/files in structure sample"],
+                )
+            )
+        elif not has_topic(knowledge, "testing") and signals["has_tests"]:
+            risks.append(
+                _risk(
+                    rule_id="tests_without_guide",
+                    title="Tests exist but lack a testing guide",
+                    description="Test files appear in the repository, but documentation does not explain how to run them.",
+                    severity="low",
+                    recommendation="Add a Testing section with commands, scope, and expected coverage.",
+                    evidence=["Test-related paths detected in repository structure", "No testing guide in indexed docs"],
                 )
             )
 
-        if not has_topic(knowledge, "deployment"):
+        if not has_topic(knowledge, "deployment") and not signals["has_docker"]:
             risks.append(
                 _risk(
                     rule_id="no_deployment_instructions",
-                    title="No deployment instructions",
+                    title="Missing deployment instructions",
                     description="Deployment/runbook guidance appears missing from indexed project knowledge.",
                     severity="medium",
                     recommendation="Add deployment steps, environments, and operational prerequisites.",
+                    evidence=["No deployment/Docker guidance found in indexed knowledge"],
                 )
             )
+
+        if not signals["has_env_example"] and ".env" not in knowledge and "environment variable" not in knowledge:
+            if inventory["structure_count"] >= 15:
+                risks.append(
+                    _risk(
+                        rule_id="missing_configuration_docs",
+                        title="Configuration or environment setup missing",
+                        description=(
+                            "The project likely needs environment configuration, but setup docs "
+                            "and env examples are weak or missing."
+                        ),
+                        severity="medium",
+                        recommendation="Add `.env.example` and document required keys for local setup.",
+                        evidence=[
+                            "No .env.example detected in repository structure sample",
+                            "Little environment-setup guidance in documentation",
+                        ],
+                    )
+                )
 
         if inventory["source_count"] < 2 or inventory["total_chars"] < 600:
             risks.append(
@@ -190,6 +277,28 @@ class RiskEngine:
                     recommendation=(
                         "Increase coverage with README, task/spec docs, API notes, and uploaded PDFs/Markdown."
                     ),
+                    evidence=[
+                        f"Source count: {inventory['source_count']}",
+                        f"Approx. documentation characters: {inventory['total_chars']}",
+                        *source_names[:3],
+                    ],
+                )
+            )
+        elif signals["has_backend"] and inventory["total_chars"] < 1800:
+            risks.append(
+                _risk(
+                    rule_id="large_backend_thin_docs",
+                    title="Large backend but almost no documentation",
+                    description=(
+                        "Backend structure is present, but documentation volume is low relative "
+                        "to the amount of server-side code suggested by the repository."
+                    ),
+                    severity="medium",
+                    recommendation="Document backend modules, APIs, and data stores used by the service layer.",
+                    evidence=[
+                        f"Backend paths detected: {len(signals['backend_paths'])}",
+                        f"Documentation characters: {inventory['total_chars']}",
+                    ],
                 )
             )
         elif inventory["structure_count"] >= 40 and inventory["total_chars"] < 2500:
@@ -203,6 +312,10 @@ class RiskEngine:
                     ),
                     severity="medium",
                     recommendation="Document critical modules, APIs, and operational workflows first.",
+                    evidence=[
+                        f"Structure paths sampled: {inventory['structure_count']}",
+                        f"Documentation characters: {inventory['total_chars']}",
+                    ],
                 )
             )
 
@@ -214,6 +327,7 @@ class RiskEngine:
                     description="No vector chunks are indexed for AI retrieval yet.",
                     severity="medium",
                     recommendation="Run project indexing so the AI Knowledge Twin can answer grounded questions.",
+                    evidence=["chunks_indexed = 0"],
                 )
             )
 
@@ -223,6 +337,7 @@ class RiskEngine:
             if (item.get("author") or "").strip()
         }
         if inventory["structure_count"] >= 25 and 0 < len(authors) <= 1:
+            author_name = next(iter(authors))
             risks.append(
                 _risk(
                     rule_id="single_contributor_concentration",
@@ -233,61 +348,95 @@ class RiskEngine:
                     ),
                     severity="low",
                     recommendation="Share ownership via pairing, reviews, and module documentation.",
+                    evidence=[
+                        f"Recent commit authors: {author_name}",
+                        f"Structure paths sampled: {inventory['structure_count']}",
+                    ],
                 )
             )
 
-        important = {path.lower() for path in ((repo or {}).get("important_files") or [])}
-        dependency_markers = {
-            "package.json",
-            "requirements.txt",
-            "pyproject.toml",
-            "go.mod",
-            "pom.xml",
-            "cargo.toml",
-        }
-        if (
-            len(important.intersection(dependency_markers)) >= 2
-            and inventory["total_chars"] < 800
-            and not has_topic(knowledge, "api")
-        ):
-            risks.append(
-                _risk(
-                    rule_id="high_dependency_modules",
-                    title="High dependency modules with weak docs",
-                    description=(
-                        "Multiple dependency manifests were detected, but supporting integration "
-                        "documentation looks weak."
-                    ),
-                    severity="low",
-                    recommendation="Document external service dependencies and integration boundaries.",
-                )
-            )
-
+        # Prefer higher severity first for demo readability.
+        severity_rank = {"high": 0, "medium": 1, "low": 2}
+        risks.sort(key=lambda item: severity_rank.get(item.get("severity"), 9))
         return risks
 
-    async def _enrich_with_llm(self, risks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _enrich_with_llm(
+        self,
+        risks: list[dict[str, Any]],
+        *,
+        repo: Optional[dict[str, Any]],
+        docs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         bullets = "\n".join(
-            f"- ({risk['severity']}) {risk['title']}: {risk['description']}" for risk in risks
+            f"- ({risk['severity']}) {risk['title']}: {risk['description']}" for risk in risks[:8]
         )
+        context_bits = [
+            f"Repository: {(repo or {}).get('full_name') or 'none'}",
+            f"Documents: {len(docs)}",
+            f"README chars: {len(((repo or {}).get('readme_content') or ''))}",
+        ]
         prompt = (
-            "Summarize these software project documentation risks in 2 short sentences "
-            "for an engineering dashboard. Keep it practical.\n\n"
-            f"{bullets}"
+            "You are an AI project consultant. Rewrite each risk into a sharper consultant-style "
+            "explanation in 1 sentence. Keep the same risks; do not invent new ones. "
+            "Return plain text bullets matching the input order.\n\n"
+            f"Context: {'; '.join(context_bits)}\n\nRisks:\n{bullets}"
         )
         try:
             result = await self.llm_manager.generate(
                 system_prompt=(
-                    "You summarize project risks clearly and briefly. "
+                    "You refine software project risk explanations clearly and briefly. "
                     "Do not invent risks that are not listed."
                 ),
                 user_prompt=prompt,
             )
-            summary = result.content.strip()
-            if summary and risks:
-                risks[0]["description"] = f"{risks[0]['description']} Summary: {summary}"
+            lines = [
+                line.lstrip("-• ").strip()
+                for line in (result.content or "").splitlines()
+                if line.strip()
+            ]
+            for index, risk in enumerate(risks[: len(lines)]):
+                refined = lines[index]
+                if refined and len(refined) > 20:
+                    # Keep title; replace explanation body when LLM is useful.
+                    if ":" in refined:
+                        refined = refined.split(":", 1)[-1].strip()
+                    risk["description"] = refined
         except Exception as exc:  # noqa: BLE001 — rules still useful without LLM
-            logger.warning("Risk LLM summarization skipped: %s", exc)
+            logger.warning("Risk LLM enrichment skipped: %s", exc)
         return risks
+
+
+def _auth_documented_well(knowledge: str) -> bool:
+    if not knowledge:
+        return False
+    strong_signals = (
+        "token flow",
+        "jwt authentication",
+        "authorization header",
+        "access token",
+        "refresh token",
+        "login flow",
+        "auth middleware",
+        "protected endpoint",
+        "bearer token",
+    )
+    hits = sum(1 for signal in strong_signals if signal in knowledge)
+    return hits >= 2 or ("authentication" in knowledge and "jwt" in knowledge and "endpoint" in knowledge)
+
+
+def _source_names(*, repo: Optional[dict[str, Any]], docs: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    if repo and (repo.get("readme_content") or "").strip():
+        names.append("README.md")
+    for item in (repo or {}).get("documentation_files") or []:
+        path = item.get("path")
+        if path:
+            names.append(str(path))
+    for doc in docs:
+        name = doc.get("file_name")
+        if name:
+            names.append(str(name))
+    return names
 
 
 def _risk(
@@ -297,6 +446,7 @@ def _risk(
     description: str,
     severity: str,
     recommendation: str,
+    evidence: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     return {
         "rule_id": rule_id,
@@ -304,6 +454,7 @@ def _risk(
         "description": description,
         "severity": severity,
         "recommendation": recommendation,
+        "evidence": [item for item in (evidence or []) if item][:5],
     }
 
 
@@ -315,6 +466,7 @@ def _serialize_risk(doc: dict[str, Any]) -> dict[str, Any]:
         "description": doc.get("description") or "",
         "severity": doc.get("severity") or "medium",
         "recommendation": doc.get("recommendation") or "",
+        "evidence": list(doc.get("evidence") or []),
         "rule_id": doc.get("rule_id"),
         "generated_at": doc.get("generated_at") or doc.get("created_at"),
     }

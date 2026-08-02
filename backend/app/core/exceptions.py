@@ -5,7 +5,13 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pymongo.errors import PyMongoError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+DB_UNAVAILABLE_MESSAGE = (
+    "Cannot reach MongoDB right now. If you use MongoDB Atlas, open Network Access "
+    "and allow your current IP (or 0.0.0.0/0 for the hackathon demo), then restart the API."
+)
 
 
 class AppError(Exception):
@@ -54,6 +60,17 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_error_body(code=exc.code, message=exc.message, details=exc.details),
         )
 
+    @app.exception_handler(PyMongoError)
+    async def mongo_error_handler(_: Request, exc: PyMongoError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content=_error_body(
+                code="database_unavailable",
+                message=DB_UNAVAILABLE_MESSAGE,
+                details=str(exc)[:300],
+            ),
+        )
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         detail = exc.detail
@@ -76,11 +93,23 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+        # Motor/pymongo sometimes wraps timeout/SSL failures as generic Exceptions.
+        text = str(exc)
+        lowered = text.lower()
+        if any(token in lowered for token in ("ssl handshake", "server selection timeout", "tlsv1_alert")):
+            return JSONResponse(
+                status_code=503,
+                content=_error_body(
+                    code="database_unavailable",
+                    message=DB_UNAVAILABLE_MESSAGE,
+                    details=text[:300],
+                ),
+            )
         return JSONResponse(
             status_code=500,
             content=_error_body(
                 code="internal_error",
                 message="An unexpected error occurred",
-                details=str(exc),
+                details=text,
             ),
         )

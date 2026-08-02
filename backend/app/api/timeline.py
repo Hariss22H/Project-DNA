@@ -1,4 +1,4 @@
-"""Timeline APIs."""
+"""Timeline APIs — project memory and evolution story."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from app.core.dependencies import get_db, get_timeline_service
 from app.schemas.timeline import TimelineEventPublic, TimelineListResponse
 from app.services.project_service import ProjectService
 from app.services.timeline import TimelineService
+from app.services.timeline.story import enrich_timeline
 
 router = APIRouter(tags=["Timeline"])
 
@@ -25,19 +26,27 @@ async def _timeline_response(
     limit: int,
 ) -> TimelineListResponse:
     await ProjectService(db).get_project(user_id=user_id, project_id=project_id)
-    events = await timeline.list_events(project_id, limit=limit)
+    events = await timeline.list_events(project_id, limit=max(limit, 50))
+    repository = await db["repositories"].find_one({"project_id": project_id})
+    cards = enrich_timeline(
+        project_id=project_id,
+        events=events,
+        repository=repository,
+        limit=limit,
+    )
     return TimelineListResponse(
         data=[
             TimelineEventPublic(
-                id=event.id,
-                project_id=event.project_id,
-                event_type=event.event_type,
-                title=event.title,
-                description=event.description,
-                metadata=event.metadata,
-                created_at=event.created_at,
+                id=str(card.get("id") or ""),
+                project_id=project_id,
+                event_type=str(card.get("event_type") or "event"),
+                title=str(card.get("title") or "Event"),
+                description=card.get("description"),
+                source=str(card.get("source") or (card.get("metadata") or {}).get("source") or "System"),
+                metadata=card.get("metadata") or {},
+                created_at=card["created_at"],
             )
-            for event in events
+            for card in cards
         ]
     )
 
