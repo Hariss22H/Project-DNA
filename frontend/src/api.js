@@ -23,6 +23,9 @@ function extractErrorMessage(body, status) {
   }
   if (raw && !/^Request failed/i.test(raw)) return raw
   if (status === 422) return 'Please check your details and try again.'
+  if (status === 503 || /mongodb|database unavailable|network access/i.test(raw)) {
+    return raw || 'Cannot reach the database. Check MongoDB Atlas Network Access / IP whitelist, then restart the API.'
+  }
   if (status >= 500) return 'Something went wrong on our side. Please try again.'
   return 'Something went wrong. Please try again.'
 }
@@ -78,11 +81,15 @@ export const api = {
     apiRequest(`/api/projects/${projectId}/index`, { method: 'POST', token }),
   chat: (token, projectId, question) =>
     apiRequest('/api/chat', { method: 'POST', token, body: { project_id: projectId, question } }),
+  generateBriefing: (token, projectId) =>
+    apiRequest(`/api/projects/${projectId}/onboarding/briefing`, { method: 'POST', token }),
   getTimeline: (token, projectId) => apiRequest(`/api/projects/${projectId}/timeline`, { token }),
   getRisks: (token, projectId) => apiRequest(`/api/projects/${projectId}/risks`, { token }),
   analyzeRisks: (token, projectId) =>
     apiRequest(`/api/projects/${projectId}/risks/analyze`, { method: 'POST', token }),
   getGraph: (token, projectId) => apiRequest(`/api/projects/${projectId}/graph`, { token }),
+  rebuildGraph: (token, projectId) =>
+    apiRequest(`/api/projects/${projectId}/graph/rebuild`, { method: 'POST', token }),
   generateLocalTimeline: () => apiRequest('/api/timeline/generate', { method: 'POST' }),
   generateLocalGraph: () => apiRequest('/api/graph/generate', { method: 'POST' }),
   health: () => apiRequest('/api/health'),

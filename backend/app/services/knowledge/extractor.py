@@ -1,12 +1,19 @@
-"""Project entity extraction for knowledge graph (Member 3 can replace)."""
+"""Semantic entity extraction for the AI Knowledge Graph."""
 
 from __future__ import annotations
 
-import re
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from app.services.knowledge.base import ProjectEntity
+from app.services.knowledge.semantics import (
+    FEATURES,
+    MODULES,
+    TECHNOLOGIES,
+    find_matches,
+    slug,
+    structure_signals,
+)
 
 
 class EntityExtractor(ABC):
@@ -23,7 +30,7 @@ class EntityExtractor(ABC):
 
 
 class DefaultEntityExtractor(EntityExtractor):
-    """Heuristic extractor good enough for a hackathon React Flow demo."""
+    """Extract meaningful project concepts, not just folder names."""
 
     async def extract(
         self,
@@ -41,6 +48,9 @@ class DefaultEntityExtractor(EntityExtractor):
                 return
             seen.add(entity.id)
             entities.append(entity)
+
+        corpus = _build_corpus(repository, documents)
+        signals = structure_signals((repository or {}).get("structure") or [])
 
         add(
             ProjectEntity(
@@ -61,121 +71,140 @@ class DefaultEntityExtractor(EntityExtractor):
                     metadata={
                         "url": repository.get("repository_url"),
                         "default_branch": repository.get("default_branch"),
+                        "description": repository.get("description"),
                     },
                 )
             )
 
-            for language, bytes_count in (repository.get("languages") or {}).items():
-                add(
-                    ProjectEntity(
-                        id=f"tech:{project_id}:{_slug(language)}",
-                        name=str(language),
-                        entity_type="technology",
-                        metadata={"bytes": bytes_count, "source": "github_languages"},
-                    )
+        # Semantic modules / features / technologies from docs + structure.
+        for name in find_matches(corpus, MODULES):
+            add(
+                ProjectEntity(
+                    id=f"module:{project_id}:{slug(name)}",
+                    name=name,
+                    entity_type="module",
+                    metadata={"source": "semantic_extraction"},
                 )
-
-            for topic in (repository.get("topics") or [])[:12]:
-                add(
-                    ProjectEntity(
-                        id=f"feature:{project_id}:{_slug(topic)}",
-                        name=str(topic),
-                        entity_type="feature",
-                        metadata={"source": "github_topics"},
-                    )
+            )
+        for name in find_matches(corpus, FEATURES):
+            add(
+                ProjectEntity(
+                    id=f"feature:{project_id}:{slug(name)}",
+                    name=name,
+                    entity_type="feature",
+                    metadata={"source": "semantic_extraction"},
                 )
-
-            modules = _top_level_modules(repository.get("structure") or [])
-            for module in modules[:20]:
-                add(
-                    ProjectEntity(
-                        id=f"module:{project_id}:{_slug(module)}",
-                        name=module,
-                        entity_type="module",
-                        metadata={"path": module, "source": "repository_structure"},
-                    )
+            )
+        for name in find_matches(corpus, TECHNOLOGIES):
+            add(
+                ProjectEntity(
+                    id=f"tech:{project_id}:{slug(name)}",
+                    name=name,
+                    entity_type="technology",
+                    metadata={"source": "semantic_extraction"},
                 )
+            )
 
-            for path in (repository.get("important_files") or [])[:25]:
-                add(
-                    ProjectEntity(
-                        id=f"file:{project_id}:{_slug(path)}",
-                        name=path,
-                        entity_type="file",
-                        metadata={"path": path, "source": "important_files"},
-                    )
+        # Language stats from GitHub still useful.
+        for language, bytes_count in ((repository or {}).get("languages") or {}).items():
+            add(
+                ProjectEntity(
+                    id=f"tech:{project_id}:{slug(str(language))}",
+                    name=str(language),
+                    entity_type="technology",
+                    metadata={"bytes": bytes_count, "source": "github_languages"},
                 )
+            )
 
-            for path in (repository.get("structure") or []):
-                lower = path.lower()
-                if any(token in lower for token in ("/api/", "routes/", "endpoints/", "controllers/")):
-                    add(
-                        ProjectEntity(
-                            id=f"api:{project_id}:{_slug(path)}",
-                            name=path,
-                            entity_type="api",
-                            metadata={"path": path, "source": "structure_heuristic"},
-                        )
-                    )
-                if len([e for e in entities if e.entity_type == "api"]) >= 12:
-                    break
-
-            if repository.get("readme_content"):
-                add(
-                    ProjectEntity(
-                        id=f"doc:{project_id}:readme",
-                        name="README.md",
-                        entity_type="document",
-                        metadata={"source": "readme"},
-                    )
+        # Ensure core architecture nodes exist when structure implies them.
+        if signals["has_backend"]:
+            add(
+                ProjectEntity(
+                    id=f"module:{project_id}:backend",
+                    name="Backend",
+                    entity_type="module",
+                    metadata={"source": "repository_structure"},
                 )
+            )
+        if signals["has_frontend"]:
+            add(
+                ProjectEntity(
+                    id=f"module:{project_id}:frontend",
+                    name="Frontend",
+                    entity_type="module",
+                    metadata={"source": "repository_structure"},
+                )
+            )
+        if signals["has_auth_code"]:
+            add(
+                ProjectEntity(
+                    id=f"module:{project_id}:authentication",
+                    name="Authentication",
+                    entity_type="module",
+                    metadata={"source": "repository_structure", "paths": signals["auth_paths"][:5]},
+                )
+            )
+        if signals["api_paths"]:
+            add(
+                ProjectEntity(
+                    id=f"api:{project_id}:rest-api",
+                    name="REST API",
+                    entity_type="api",
+                    metadata={"paths": signals["api_paths"][:8], "source": "structure_heuristic"},
+                )
+            )
+
+        if repository and (repository.get("readme_content") or "").strip():
+            add(
+                ProjectEntity(
+                    id=f"doc:{project_id}:readme",
+                    name="README.md",
+                    entity_type="document",
+                    metadata={"source": "readme", "role": "project_overview"},
+                )
+            )
+
+        for item in ((repository or {}).get("documentation_files") or [])[:20]:
+            path = item.get("path") or "document"
+            add(
+                ProjectEntity(
+                    id=f"doc:{project_id}:repo:{slug(path)}",
+                    name=str(path).split("/")[-1],
+                    entity_type="document",
+                    metadata={"path": path, "source": "repository_documentation"},
+                )
+            )
 
         for doc in documents[:40]:
             file_name = doc.get("file_name") or "document"
             add(
                 ProjectEntity(
-                    id=f"doc:{project_id}:{doc.get('_id') or _slug(file_name)}",
+                    id=f"doc:{project_id}:{doc.get('_id') or slug(file_name)}",
                     name=file_name,
                     entity_type="document",
                     metadata={
                         "file_type": doc.get("file_type"),
-                        "is_architecture": bool(doc.get("is_architecture")),
                         "source": "uploaded_document",
                     },
                 )
             )
-            # Lightweight tech hints from filenames.
-            lower = file_name.lower()
-            for tech in ("docker", "kubernetes", "fastapi", "react", "postgres", "mongo", "redis"):
-                if tech in lower:
-                    add(
-                        ProjectEntity(
-                            id=f"tech:{project_id}:{tech}",
-                            name=tech.title() if tech != "fastapi" else "FastAPI",
-                            entity_type="technology",
-                            metadata={"source": "document_filename"},
-                        )
-                    )
 
         return entities
 
 
-def _slug(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", (value or "").strip().lower()).strip("-")
-    return cleaned[:80] or "item"
-
-
-def _top_level_modules(structure: list[str]) -> list[str]:
-    modules: list[str] = []
-    seen: set[str] = set()
-    for path in structure:
-        part = path.split("/")[0].strip()
-        if not part or "." in part:
-            continue
-        if part.lower() in {"node_modules", ".git", "dist", "build", "coverage", "__pycache__"}:
-            continue
-        if part in seen:
-            continue
-        seen.add(part)
-        modules.append(part)
-    return modules
+def _build_corpus(repository: Optional[dict[str, Any]], documents: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    if repository:
+        parts.append(str(repository.get("description") or ""))
+        parts.append(str(repository.get("readme_content") or ""))
+        parts.append(" ".join(repository.get("topics") or []))
+        parts.append(" ".join((repository.get("languages") or {}).keys()))
+        parts.append(" ".join(repository.get("important_files") or []))
+        parts.append(" ".join((repository.get("structure") or [])[:120]))
+        for item in repository.get("documentation_files") or []:
+            parts.append(str(item.get("path") or ""))
+            parts.append(str(item.get("content") or "")[:4000])
+    for doc in documents:
+        parts.append(str(doc.get("file_name") or ""))
+        parts.append(str(doc.get("extracted_text") or "")[:4000])
+    return "\n".join(parts)

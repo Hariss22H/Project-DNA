@@ -123,11 +123,12 @@ class IndexingService:
                     project_id=project_id,
                     event_type="knowledge_indexed",
                     title="Knowledge Base Indexed",
-                    description=f"Indexed {upserted} chunks from {len(sources)} sources",
+                    description=f"Indexed {upserted} chunks from {len(sources)} sources into the Knowledge Twin.",
                     metadata={
                         "chunks_indexed": upserted,
                         "sources_indexed": len(sources),
                         "embedding_model": self.embeddings.model_name,
+                        "source": "AI",
                     },
                 )
             )

@@ -41,13 +41,17 @@ class RAGService:
         self.top_k = top_k or settings.rag_top_k
         self.min_score = min_score if min_score is not None else settings.rag_min_score
 
-    async def ask(self, *, project_id: str, question: str) -> dict[str, Any]:
-        started = time.perf_counter()
+    async def retrieve(
+        self,
+        *,
+        project_id: str,
+        question: str,
+        top_k: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Run the shared retrieval pipeline without calling the LLM."""
         cleaned_question = (question or "").strip()
         if not cleaned_question:
             raise AppError("Question cannot be empty", status_code=400, code="empty_question")
-        if len(cleaned_question) > 4000:
-            raise AppError("Question is too long", status_code=400, code="question_too_long")
 
         indexed = await self.vector_store.count_by_project(project_id)
         if indexed <= 0:
@@ -57,19 +61,42 @@ class RAGService:
                 code="not_indexed",
             )
 
+        limit = top_k or self.top_k
         query_vector = await self.embeddings.embed_query(cleaned_question)
-        # Over-fetch a little so we can demote thin metadata while keeping useful docs.
         raw_results = await self.vector_store.search(
             project_id=project_id,
             query_vector=query_vector,
-            top_k=max(self.top_k * 2, self.top_k),
+            top_k=max(limit * 2, limit),
         )
         relevant = _select_relevant_chunks(
             raw_results,
             min_score=self.min_score,
-            top_k=self.top_k,
+            top_k=limit,
         )
+        context_blocks = [_format_context_block(idx, item) for idx, item in enumerate(relevant, start=1)]
+        sources = [_serialize_source(item) for item in relevant]
+        return {
+            "relevant": relevant,
+            "context_blocks": context_blocks,
+            "sources": sources,
+            "confidence": _compute_confidence(relevant, top_k=limit),
+            "retrieved_count": len(relevant),
+            "indexed_count": indexed,
+        }
 
+    async def ask(self, *, project_id: str, question: str) -> dict[str, Any]:
+        started = time.perf_counter()
+        cleaned_question = (question or "").strip()
+        if not cleaned_question:
+            raise AppError("Question cannot be empty", status_code=400, code="empty_question")
+        if len(cleaned_question) > 4000:
+            raise AppError("Question is too long", status_code=400, code="question_too_long")
+
+        retrieval = await self.retrieve(project_id=project_id, question=cleaned_question)
+        relevant = retrieval["relevant"]
+        context_blocks = retrieval["context_blocks"]
+        sources = retrieval["sources"]
+        confidence = retrieval["confidence"]
         filenames = [
             str((item.payload or {}).get("file_name") or (item.payload or {}).get("title") or "unknown")
             for item in relevant
@@ -82,15 +109,14 @@ class RAGService:
             scores,
             filenames,
             self.min_score,
-            indexed,
+            retrieval["indexed_count"],
         )
 
         # Never answer without retrieval.
         if not relevant:
             logger.info(
-                "RAG hard-refuse project_id=%s reason=no_chunks_above_threshold raw_top_scores=%s",
+                "RAG hard-refuse project_id=%s reason=no_chunks_above_threshold",
                 project_id,
-                [round(float(item.score), 4) for item in raw_results[:5]],
             )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             return {
@@ -103,9 +129,6 @@ class RAGService:
                 "retrieved_count": 0,
             }
 
-        context_blocks = [_format_context_block(idx, item) for idx, item in enumerate(relevant, start=1)]
-        sources = [_serialize_source(item) for item in relevant]
-        confidence = _compute_confidence(relevant, top_k=self.top_k)
         user_prompt = build_user_prompt(
             question=cleaned_question,
             context_blocks=context_blocks,

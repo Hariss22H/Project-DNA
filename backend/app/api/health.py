@@ -24,7 +24,11 @@ async def health_check(settings: Settings = Depends(get_app_settings)) -> Health
         DependencyStatus(
             name="mongodb",
             status="ok" if mongo_ok else "unavailable",
-            detail="Ping succeeded" if mongo_ok else "Unable to reach MongoDB",
+            detail=(
+                "Ping succeeded"
+                if mongo_ok
+                else "Unable to reach MongoDB. Check Atlas Network Access IP whitelist or local MONGODB_URI."
+            ),
         )
     ]
     overall = "ok" if mongo_ok else "degraded"

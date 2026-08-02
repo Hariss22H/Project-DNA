@@ -98,13 +98,14 @@ class KnowledgeGraphService:
         await services.timeline.add_event(
             TimelineEvent(
                 project_id=project_id,
-                event_type="knowledge_graph_generated",
+                event_type="knowledge_graph_built",
                 title="Knowledge Graph Generated",
-                description=f"Built graph with {len(payload.get('nodes', []))} nodes",
+                description=f"Built semantic graph with {len(payload.get('nodes', []))} concepts and {len(payload.get('edges', []))} relationships.",
                 metadata={
                     "nodes": len(payload.get("nodes", [])),
                     "edges": len(payload.get("edges", [])),
                     "entities": len(entities),
+                    "source": "AI",
                 },
             )
         )

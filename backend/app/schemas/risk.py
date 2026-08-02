@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RiskPublic(BaseModel):
@@ -15,6 +15,7 @@ class RiskPublic(BaseModel):
     description: str = ""
     severity: str = "medium"
     recommendation: str = ""
+    evidence: list[str] = Field(default_factory=list)
     rule_id: Optional[str] = None
     generated_at: Optional[datetime] = None
 
