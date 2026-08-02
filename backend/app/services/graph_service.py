@@ -1,7 +1,7 @@
 import ast
 from pathlib import Path
 from typing import Dict, List, Any
-from app.services.repository_service import repository_service, REPO_ROOT
+from app.services.local_repository_service import REPO_ROOT, repository_service
 
 
 class GraphService:
@@ -70,6 +70,27 @@ class GraphService:
             "nodes": nodes,
             "edges": edges,
         }
+
+    def enrich(self, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Append AI-extracted entities onto the structural knowledge graph."""
+        base = self.generate()
+        seen = {node["id"] for node in base.get("nodes") or []}
+
+        for entity in entities or []:
+            name = str(entity.get("name") or "").strip()
+            entity_type = str(entity.get("type") or "Entity").strip() or "Entity"
+            if not name:
+                continue
+            node_id = f"ai::{entity_type}::{name}"
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            base["nodes"].append({"id": node_id, "label": name, "type": entity_type})
+            base["edges"].append(
+                {"source": "repo_root", "target": node_id, "relation": "Mentions"}
+            )
+
+        return base
 
 
 graph_service = GraphService()

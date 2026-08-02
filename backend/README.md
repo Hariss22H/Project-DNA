@@ -1,6 +1,6 @@
-# Project-DNA Backend
+# Project DNA ? Backend (Hackathon MVP)
 
-This is the FastAPI backend for Project-DNA.
+FastAPI backend for the AI Knowledge Twin.
 
 ## Setup
 1. Create a virtual environment: `python -m venv venv`
@@ -45,4 +45,63 @@ Watch the complete demonstration of *Project DNA* here:
 ### Phase 4
 - Chat: `POST /api/chat`
 - OpenAI primary ? retry ? Gemini fallback
-# Conflict resolved
+- Grounded answers with citations
+
+### Phase 5
+- Timeline / risks / dashboard APIs
+- Heuristic health + knowledge coverage scores
+
+### Phase 6
+- Knowledge graph JSON for React Flow
+- Graph preview on dashboard
+
+## Hackathon demo flow
+
+1. Register / login
+2. Create project
+3. `POST /projects/{id}/github` with a public repo URL
+4. Upload a PDF/MD doc (optional)
+5. `POST /projects/{id}/index`
+6. `POST /chat` with a project question
+7. Open dashboard, timeline, risks, graph
+
+## Quick start
+
+```bash
+cd backend
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+copy .env.example .env
+uvicorn app.main:app --reload --port 8000
+```
+
+- API root: http://localhost:8000/
+- Health: http://localhost:8000/api/health
+- Swagger: http://localhost:8000/docs
+
+## Tests
+
+```bash
+cd backend
+pytest -v
+```
+
+## Member 3 integration routes
+
+Member 3 utility connectors are mounted alongside the core APIs:
+
+| Area | Endpoints |
+|------|-----------|
+| GitHub connector | `/api/github/*` |
+| Local repository scanner | `/api/repository/*` |
+| Upload / PDF / DOCX / metadata | `/api/documents/upload`, `/api/documents/pdf/parse`, ... |
+| Timeline generate | `/api/timeline/generate` |
+| Graph generate / enrich | `/api/graph/generate`, `/api/graph/enrich` |
+
+Core product routes (auth, projects, RAG chat, dashboard, project graph/timeline) remain owned by Member 1.
+
+Local filesystem scanner lives in `app/services/local_repository_service.py` so it does not collide with Member 1 `repository_service.py` orchestration.

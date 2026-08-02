@@ -1,5 +1,7 @@
 node_modules/
 dist/
+frontend/.vite/
+.env
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -153,6 +155,9 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# Project DNA uploads
+backend/uploads/
 env/
 venv/
 ENV/

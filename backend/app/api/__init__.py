@@ -1,1 +1,1 @@
-# API package
+"""HTTP API routers."""
