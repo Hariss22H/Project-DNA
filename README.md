@@ -57,6 +57,8 @@ Render (FastAPI)
 
 You do **not** self-host the vector database — **Qdrant Cloud** is already the production vector store when `QDRANT_URL` and `QDRANT_API_KEY` are set.
 
+The current MVP primarily indexes repository documentation such as README files and uploaded project documents. In the next iteration, we plan to extend the indexing pipeline to include source code, dependency manifests (package.json, requirements.txt, pom.xml, etc.), and repository structure, enabling Project DNA to understand projects even when documentation is minimal.
+
 ---
 
 ## Tech stack
@@ -110,13 +112,82 @@ VITE_API_BASE_URL=https://YOUR-RENDER-SERVICE.onrender.com
 ## Demo flow (judges / testers)
 
 1. Open the live app: [https://project-dna-five.vercel.app](https://project-dna-five.vercel.app)
-2. Create an account (password ≥ 6 characters)
-3. Create a project
-4. Connect a **public** GitHub repo
-5. Upload a short PDF/MD doc (optional)
-6. Run **Index knowledge**
-7. Ask chat: *“What is this project about?”*
-8. Check Dashboard, Risks, Timeline, and Knowledge Graph
+### 1) Create an account
+1. Open the live app link above.
+2. Click **Create account** (or the signup switch).
+3. Enter:
+   - Full name
+   - Email
+   - Password (**at least 6 characters**)
+   - Role (optional)
+4. Click **Create account and continue**.
+5. You should land inside the Project DNA workspace.
+
+### 2) Create a project
+1. In the left sidebar, open **Projects**.
+2. In the **Create project** card:
+   - Enter a project name (e.g. `Nova Demo`)
+   - Add a short description (optional)
+3. Click **Create**.
+4. Confirm the new project appears under **Your projects** and becomes the active project (top project selector).
+
+### 3) Connect a public GitHub repository
+1. Stay on the **Projects** page.
+2. In the **Connect GitHub** section (below create/list):
+   - Paste a **public** repository URL  
+     Example: `https://github.com/facebook/react`
+3. Click **Connect**.
+4. Wait for the success toast. The project should now show the connected GitHub URL.
+
+### 4) Index knowledge
+1. Still on **Projects**, click **Index knowledge**.
+2. Wait until indexing finishes (success toast).
+3. This chunks the repo/docs, creates embeddings, and stores vectors in **Qdrant Cloud**.
+
+### 5) Upload documents (optional but recommended)
+1. Open **Documents** in the sidebar.
+2. Click the upload area and choose a short **PDF / MD / DOCX / TXT** file.
+3. Wait for upload + extraction success.
+4. (Recommended) Go back to **Projects** and click **Index knowledge** again so the new document is included in RAG.
+
+### 6) Explore Knowledge Graph
+1. Open **Knowledge Graph** in the sidebar.
+2. Review nodes (entities/files/concepts) and edges (relationships).
+3. This shows the structural/AI knowledge map of the connected project.
+
+### 7) Explore Timeline
+1. Open **Timeline** in the sidebar.
+2. Review project activity events (repo connected, docs uploaded, indexing/story events, etc.).
+
+### 8) Ask questions in AI Chat
+1. Open **AI Chat** in the sidebar (or the floating chat button).
+2. Ask grounded questions, for example:
+   - `What is this project about?`
+   - `Explain the authentication flow.`
+   - `What are the main risks or undocumented areas?`
+3. Check that answers include context/sources and confidence when available.
+
+### 9) Generate onboarding briefing (WOW feature)
+1. Open **Dashboard** (or the onboarding briefing section in the UI).
+2. Click **Generate Briefing**.
+3. Wait for the AI briefing to generate.
+4. Review the structured briefing sections about the project (great for a new teammate joining).
+5. Optionally download/print the briefing if those actions are shown.
+
+### 10) Check Dashboard + Risks
+1. Open **Dashboard** and click **Refresh data** if needed.
+2. Confirm health score, docs indexed, sources, and activity look populated.
+3. Open **Risk Dashboard** → click **Analyze**.
+4. Review knowledge-risk alerts (ownership gaps, missing docs, stale decisions, etc.).
+
+### Suggested 3-minute judge script
+1. Sign up → create project  
+2. Paste public GitHub URL → **Connect** → **Index knowledge**  
+3. Upload one short doc → re-index  
+4. Show **Knowledge Graph** + **Timeline**  
+5. Ask one chat question with sources  
+6. Click **Generate Briefing** and walk through the onboarding report  
+7. End on **Risk Dashboard → Analyze**
 
 ---
 
