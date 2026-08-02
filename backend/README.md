@@ -2,6 +2,19 @@
 
 FastAPI backend for the AI Knowledge Twin.
 
+## Setup
+1. Create a virtual environment: `python -m venv venv`
+2. Activate the virtual environment.
+3. Install dependencies: `pip install -r requirements.txt`
+4. Copy `.env.example` to `.env`
+5. Run the server: `uvicorn app.main:app --reload`
+
+## Demo Video
+
+Watch the complete demonstration of *Project DNA* here:
+
+🔗 Demo Video: https://youtu.be/your-demo-video-link
+
 ## Current status
 
 ### Phase 0
