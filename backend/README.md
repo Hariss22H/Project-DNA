@@ -45,3 +45,4 @@ Watch the complete demonstration of *Project DNA* here:
 ### Phase 4
 - Chat: `POST /api/chat`
 - OpenAI primary ? retry ? Gemini fallback
+# Conflict resolved
