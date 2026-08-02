@@ -6,11 +6,22 @@ Project DNA is an AI Knowledge Twin that turns a GitHub repository and project d
 
 ---
 
-## Live Demo
+## 🚀 Live Demo
 
-**Frontend (Vercel):** [https://project-dna-five.vercel.app](https://project-dna-five.vercel.app)
+### 🌐 Application
 
-> Backend runs on **Render** (FastAPI). Vectors live in **Qdrant Cloud**. App data lives in **MongoDB Atlas**.
+- **Frontend (Vercel):** https://project-dna-five.vercel.app
+
+> **Backend:** Render (FastAPI)  
+> **Vector Database:** Qdrant Cloud  
+> **Database:** MongoDB Atlas
+
+### 🎥 Demo Video
+
+Watch the complete walkthrough of **Project DNA** here:
+
+**Loom Recording:**  
+https://www.loom.com/share/1c4085203d844fbfb9720a7b4d5e0eea
 
 ---
 
@@ -51,7 +62,7 @@ You do **not** self-host the vector database — **Qdrant Cloud** is already the
 ## Tech stack
 
 **Frontend:** React, Vite, Lucide icons · deployed on [Vercel](https://project-dna-five.vercel.app)  
-**Backend:** FastAPI, Motor/MongoDB, Qdrant, LangChain/OpenAI/Gemini · deployed on Render  
+**Backend:** FastAPI, MongoDB, Qdrant, LangChain/OpenAI/Gemini · deployed on Render  
 **Auth:** JWT (python-jose + passlib/bcrypt)
 
 ---
